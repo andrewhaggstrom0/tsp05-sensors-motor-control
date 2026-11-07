@@ -22,3 +22,7 @@ firmware/**/build/
 # ROS bags (large; commit exported CSVs instead)
 *.db3
 *.mcap
+
+# Simulated calibration data from tools/log_serial.py --sim
+calibration/sim_data/
+*.csv.bak
