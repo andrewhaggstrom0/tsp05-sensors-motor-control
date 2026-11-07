@@ -77,3 +77,26 @@ Press and release the FSR a few times with different force.
 ### Rehearsal without hardware
 Add `--sim` to any command. Simulated data goes to `calibration/sim_data/`
 (git-ignored), never to `data/`.
+
+## Figures and error tables (A2 to A6)
+
+```bash
+python3 tools/plot_calibration.py
+```
+Reads every CSV in `data/` and writes `plots/*.png` plus `results.md` (all error
+tables, ready for the main README). Rerun it whenever a CSV or a constant in
+`config.h` changes. After the FSR calibration, write the fitted table into the
+firmware and re-verify:
+```bash
+python3 tools/plot_calibration.py --apply-fsr-table
+firmware/tests/run_tests.sh && python3 tools/check_firmware_vs_model.py
+```
+Compare filter settings with `--alphas 0.1 0.4`. Rehearse with
+`--data calibration/sim_data`.
+
+Any time series CSV, including Foxglove exports (TOF raw vs filtered, DC step
+response):
+```bash
+python3 tools/plot_calibration.py --timeseries export.csv \
+    --series raw_mm filt_mm --title "TOF filter" --ylabel "Distance (mm)"
+```
