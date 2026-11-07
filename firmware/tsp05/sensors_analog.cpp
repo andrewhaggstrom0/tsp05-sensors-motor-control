@@ -5,13 +5,12 @@
 
 // ---------------------------------------------------------------------------
 // Flex calibration table: sensor resistance (ohms) -> bend angle (degrees).
-// PLACEHOLDER from the Adafruit 182 spec (~10k flat, ~20k bent). Replace with
-// the fit from calibration/data/flex.csv (tools/plot_calibration.py
-// --apply-flex-table). Breakpoints must be ascending.
+// Fitted by tools/plot_calibration.py from calibration/data/flex.csv on 2026-11-07.
+// Breakpoints must be ascending.
 // Beyond either end the nearest segment's slope is extrapolated, then clamped.
 // ---------------------------------------------------------------------------
-static const float FLEX_R_OHMS[] = {10000.0f, 20000.0f};
-static const float FLEX_DEG[]    = {0.0f, 90.0f};
+static const float FLEX_R_OHMS[] = {11500.0f, 17195.0f, 22900.0f};
+static const float FLEX_DEG[]    = {-0.00f, 55.01f, 91.72f};
 static const int   FLEX_PTS      = sizeof(FLEX_R_OHMS) / sizeof(FLEX_R_OHMS[0]);
 
 namespace analog_math {
