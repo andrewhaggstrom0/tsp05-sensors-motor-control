@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Calibration logger for Track 4.
 
-Reads the stream from firmware/bringup/analog ("ms,fsr_adc,th_adc" at 50 Hz),
+Reads the stream from firmware/bringup/analog ("ms,flex_adc,th_adc" at 50 Hz),
 asks you for the reference value at each point, averages the samples, and
 appends one row per point to calibration/data/. Rows are written as soon as
 they are taken, so a crash or a bumped cable never loses earlier points.
@@ -9,17 +9,17 @@ they are taken, so a crash or a bumped cable never loses earlier points.
 Modes:
   therm   type the thermometer reading (degC) at each point -> thermistor.csv
           waits for the reading to settle before capturing
-  fsr     type the mass on the puck (g) at each point       -> fsr.csv
-          load/unload direction and trial number are tracked for you
-  stream  record the FSR for N seconds while you press it    -> fsr_filter.csv
+  flex    type the bend angle (degrees) at each point       -> flex.csv
+          bend/unbend direction and trial number are tracked for you
+  stream  record the flex sensor for N seconds while you bend it -> flex_filter.csv
           (the raw signal for the raw-vs-filtered plot)
 
 At a prompt:  a number = take a point,  u = undo last row,  q = quit.
 
 Examples:
   python3 tools/log_serial.py therm                    # auto-detect the Uno
-  python3 tools/log_serial.py fsr --port /dev/ttyACM0  # Linux / WSL
-  python3 tools/log_serial.py fsr --port COM4          # Windows
+  python3 tools/log_serial.py flex --port /dev/ttyACM0  # Linux / WSL
+  python3 tools/log_serial.py flex --port COM4          # Windows
   python3 tools/log_serial.py stream --seconds 15
   python3 tools/log_serial.py therm --sim              # no hardware: simulated sensor
 
@@ -29,11 +29,13 @@ Needs pyserial for real hardware (pip install -r tools/requirements.txt).
 from __future__ import annotations
 
 import argparse
+import collections
 import csv
 import math
 import random
 import statistics
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -43,18 +45,17 @@ import analog_model as m  # noqa: E402
 DATA_DIR = m.REPO / "calibration" / "data"
 SIM_DIR = m.REPO / "calibration" / "sim_data"
 SAMPLE_HZ = 50
-G = 9.81  # m/s^2
 
 # CSV schemas (documented in calibration/README.md). Only measured or
 # reference values are stored; anything derived from config.h constants
-# (model temperature, model force, errors) is computed at plot time, so
+# (model temperature, model angle, errors) is computed at plot time, so
 # changing a constant never leaves stale numbers in a CSV.
 SCHEMAS = {
     "therm": ["ref_C", "adc_mean", "adc_std", "n"],
-    "fsr": ["trial", "direction", "mass_g", "force_N", "adc_mean", "adc_std", "n"],
-    "stream": ["t_s", "fsr_adc"],
+    "flex": ["trial", "direction", "ref_deg", "adc_mean", "adc_std", "n"],
+    "stream": ["t_s", "flex_adc"],
 }
-DEFAULT_FILES = {"therm": "thermistor.csv", "fsr": "fsr.csv", "stream": "fsr_filter.csv"}
+DEFAULT_FILES = {"therm": "thermistor.csv", "flex": "flex.csv", "stream": "flex_filter.csv"}
 
 # USB vendor IDs: Arduino LLC/SRL, WCH CH340 clones, Silicon Labs CP210x
 ARDUINO_VIDS = {0x2341, 0x2A03, 0x1A86, 0x10C4}
@@ -64,7 +65,15 @@ ARDUINO_VIDS = {0x2341, 0x2A03, 0x1A86, 0x10C4}
 # Sample sources
 # ----------------------------------------------------------------------------
 class SerialSource:
-    """The real Uno running firmware/bringup/analog."""
+    """The real Uno running firmware/bringup/analog.
+
+    A background thread reads the port continuously, so data never piles up
+    in the operating system, driver, or usbipd (WSL) buffers while you are
+    typing at a prompt. read(n) then returns only samples that arrive after it
+    is called. (Clearing the buffer with reset_input_buffer() is not enough
+    over usbipd: data still in flight arrives after the clear, so captures
+    started with seconds-old readings.)
+    """
 
     def __init__(self, port: str, baud: int):
         try:
@@ -82,27 +91,60 @@ class SerialSource:
         else:
             print(f"Warning: no bring-up banner from {port}. Is "
                   "firmware/bringup/analog flashed? Continuing anyway.")
+        self._cv = threading.Condition()
+        self._buf: collections.deque = collections.deque(maxlen=SAMPLE_HZ * 600)
+        self._count = 0          # samples received since connecting
+        self._error: BaseException | None = None
+        threading.Thread(target=self._pump, daemon=True).start()
+
+    def _pump(self) -> None:
+        bad = 0
+        try:
+            while True:
+                raw = self.ser.readline()
+                if not raw:
+                    continue                      # read() reports the stall
+                line = raw.decode(errors="replace").strip()
+                if not line or line.startswith("#"):
+                    continue
+                try:
+                    ms, flex, th = line.split(",")
+                    sample = (int(ms), float(flex), float(th))
+                except ValueError:
+                    bad += 1                      # e.g. a line cut by a reset
+                    if bad > 25:
+                        raise RuntimeError(f"too many malformed lines, last: {line!r}")
+                    continue
+                with self._cv:
+                    self._buf.append(sample)
+                    self._count += 1
+                    self._cv.notify_all()
+        except BaseException as e:               # surface it in read()
+            with self._cv:
+                self._error = e
+                self._cv.notify_all()
 
     def read(self, n: int) -> list[tuple[int, float, float]]:
-        """Next n samples as (ms, fsr_adc, th_adc). Drops anything buffered."""
-        self.ser.reset_input_buffer()
-        out: list[tuple[int, float, float]] = []
-        bad = 0
-        while len(out) < n:
-            raw = self.ser.readline()
-            if not raw:
-                raise TimeoutError("no data for 1 s: check the port, the baud "
-                                   "rate, and that the bring-up sketch is running")
-            line = raw.decode(errors="replace").strip()
-            if not line or line.startswith("#"):
-                continue
-            try:
-                ms, fsr, th = line.split(",")
-                out.append((int(ms), float(fsr), float(th)))
-            except ValueError:
-                bad += 1  # a partial line after the buffer reset is normal
-                if bad > 25:
-                    raise RuntimeError(f"too many malformed lines, last: {line!r}")
+        """The next n samples that arrive after this call, as (ms, flex_adc, th_adc)."""
+        with self._cv:
+            start = self._count
+            last_progress, last_count = time.time(), start
+            while self._count - start < n:
+                if self._error:
+                    raise RuntimeError(f"serial reader stopped: {self._error}")
+                self._cv.wait(timeout=0.5)
+                if self._count != last_count:
+                    last_progress, last_count = time.time(), self._count
+                elif time.time() - last_progress > 2:
+                    raise TimeoutError("no data for 2 s: check the port, the baud rate, "
+                                       "and that the bring-up sketch is running")
+            got = self._count - start
+            out = list(self._buf)[-got:][:n]
+        # The Uno timestamps every sample; a jump means samples went missing.
+        gaps = [b[0] - a[0] for a, b in zip(out, out[1:])]
+        if gaps and max(gaps) > 5 * 1000 // SAMPLE_HZ:
+            print(f"  Warning: {max(gaps)} ms gap in the data (samples were lost). "
+                  "Redo this point.")
         return out
 
     def set_truth(self, **_kw) -> None:
@@ -114,30 +156,29 @@ class SimSource:
 
     Deliberately imperfect, so the plots and error tables look like real data:
       thermistor: +0.4 degC bias, first-order lag (tau 3 s), 0.6 count noise
-      FSR: real sensor 20% more sensitive than the placeholder table,
-           10% hysteresis while unloading, 2 count noise
+      flex: this unit is 8% stiffer-reading than the placeholder table, with a
+            slight curve, 4% hysteresis while unbending, 1 count noise
     """
 
     def __init__(self, seed: int = 1):
         self.rng = random.Random(seed)
         self.ms = 0
         self.temp_target = self.temp = 22.0
-        self.force = 0.0
-        self.unloading = False
+        self.angle = 0.0
+        self.unbending = False
 
-    def set_truth(self, temp_c: float | None = None, force_n: float | None = None,
-                  unloading: bool = False) -> None:
+    def set_truth(self, temp_c: float | None = None, angle_deg: float | None = None,
+                  unbending: bool = False) -> None:
         if temp_c is not None:
             self.temp_target = temp_c
-        if force_n is not None:
-            self.force = force_n
-        self.unloading = unloading
+        if angle_deg is not None:
+            self.angle = angle_deg
+        self.unbending = unbending
 
-    def _fsr_adc(self, force_n: float) -> float:
-        if force_n <= 0:
-            return max(0.0, self.rng.gauss(0.5, 0.5))
-        f = force_n * 1.2 * (1.10 if self.unloading else 1.0)
-        return min(m.ADC_MAX, max(0.0, m.adc_from_fsr_newtons(f) + self.rng.gauss(0, 2)))
+    def _flex_adc(self, angle: float) -> float:
+        a = max(angle, 0.0) / 90.0
+        r = 10500.0 * (1 + 0.92 * a + 0.12 * a * a) * (1.04 if self.unbending else 1.0)
+        return min(m.ADC_MAX, max(0.0, m.adc_from_flex_ohms(r) + self.rng.gauss(0, 1)))
 
     def read(self, n: int) -> list[tuple[int, float, float]]:
         out = []
@@ -146,7 +187,7 @@ class SimSource:
             self.ms += int(1000 * dt)
             self.temp += (self.temp_target - self.temp) * (1 - math.exp(-dt / 3.0))
             th = m.adc_from_therm_c(self.temp + 0.4) + self.rng.gauss(0, 0.6)
-            out.append((self.ms, round(self._fsr_adc(self.force)), round(th, 2)))
+            out.append((self.ms, round(self._flex_adc(self.angle)), round(th, 2)))
         return out
 
 
@@ -279,17 +320,18 @@ def run_therm(src, path: Path, args) -> None:
     print(f"{len(rows)} points in {show(path)}")
 
 
-def run_fsr(src, path: Path, args) -> None:
-    fields = SCHEMAS["fsr"]
+def run_flex(src, path: Path, args) -> None:
+    fields = SCHEMAS["flex"]
     rows = open_output(path, fields, args.new)
     trial = max((int(r["trial"]) for r in rows), default=0) + 1
-    prev_mass = None
-    direction = "load"
-    print(f"\nTrial {trial}. Centre the puck on the FSR. Add mass in steps "
-          "(type the total mass on the puck, puck included),\nthen take it off "
-          "in steps. Type 0 for the empty FSR. Direction is tracked for you.\n")
+    prev = None
+    direction = "bend"
+    print(f"\nTrial {trial}. Tape the crimped end down, flat. Bend the sensor in steps "
+          "and hold it at each angle\n(protractor or a printed angle guide), type the "
+          "angle, keep holding until 'saved'. Then come back\ndown in steps. 0 = flat. "
+          "Bend/unbend direction is tracked for you.\n")
     while True:
-        cmd = parse_command("fsr> total mass in g (u = undo, q = quit): ", 0, 10000)
+        cmd = parse_command("flex> bend angle in degrees (u = undo, q = quit): ", -30, 180)
         if cmd == "q":
             break
         if cmd == "u":
@@ -297,24 +339,23 @@ def run_fsr(src, path: Path, args) -> None:
                 print(f"  Removed {rows.pop()}")
                 write_rows(path, fields, rows)
             continue
-        if prev_mass is not None:
-            if cmd > prev_mass and direction == "unload":
-                trial += 1  # going back up after unloading starts a new trial
+        if prev is not None:
+            if cmd > prev and direction == "unbend":
+                trial += 1  # bending again after unbending starts a new trial
                 print(f"  Starting trial {trial}")
-            if cmd != prev_mass:
-                direction = "load" if cmd > prev_mass else "unload"
-        prev_mass = cmd
-        force = cmd / 1000.0 * G
-        src.set_truth(force_n=force, unloading=(direction == "unload"))
-        src.read(int(args.fsr_settle_s * SAMPLE_HZ))   # let the FSR creep settle
+            if cmd != prev:
+                direction = "bend" if cmd > prev else "unbend"
+        prev = cmd
+        src.set_truth(angle_deg=cmd, unbending=(direction == "unbend"))
+        src.read(int(args.flex_settle_s * SAMPLE_HZ))   # let the reading settle
         mean, std = stats([s[1] for s in src.read(args.samples)])
-        row = {"trial": trial, "direction": direction, "mass_g": f"{cmd:.1f}",
-               "force_N": f"{force:.4f}", "adc_mean": f"{mean:.2f}",
-               "adc_std": f"{std:.2f}", "n": args.samples}
+        row = {"trial": trial, "direction": direction, "ref_deg": f"{cmd:.1f}",
+               "adc_mean": f"{mean:.2f}", "adc_std": f"{std:.2f}", "n": args.samples}
         rows.append(row)
         write_rows(path, fields, rows)
-        print(f"  saved: trial {trial} {direction}, {cmd:g} g = {force:.3f} N, "
-              f"adc {mean:.1f} +/- {std:.1f} -> table {m.fsr_newtons_from_adc(mean):.2f} N")
+        r = m.flex_ohms_from_adc(mean)
+        print(f"  saved: trial {trial} {direction}, {cmd:g} deg, adc {mean:.1f} +/- {std:.1f} "
+              f"(R = {r / 1000:.2f} k) -> table {m.flex_deg_from_adc(mean):.1f} deg")
     print(f"{len(rows)} points in {show(path)}")
 
 
@@ -331,19 +372,19 @@ def run_stream(src, path: Path, args) -> None:
         for k in range(n):   # a few presses of different strength
             t = k / SAMPLE_HZ
             phase = t % 4.0
-            level = (2.0, 5.0, 8.0)[int(t // 4.0) % 3]
-            src.set_truth(force_n=level if 0.5 < phase < 2.5 else 0.0)
+            level = (30.0, 60.0, 90.0)[int(t // 4.0) % 3]
+            src.set_truth(angle_deg=level if 0.5 < phase < 2.5 else 0.0)
             samples += src.read(1)
     else:
         try:
-            input(f"Press Enter, then press and release the FSR a few times "
-                  f"for {args.seconds:g} s (vary the force)...")
+            input(f"Press Enter, then bend and release the flex sensor a few times "
+                  f"for {args.seconds:g} s (different angles, hold each ~2 s)...")
         except EOFError:
             pass
         samples = src.read(n)
     t0 = samples[0][0]
-    write_rows(path, fields, [{"t_s": f"{(ms - t0) / 1000:.3f}", "fsr_adc": f"{fsr:g}"}
-                              for ms, fsr, _ in samples])
+    write_rows(path, fields, [{"t_s": f"{(ms - t0) / 1000:.3f}", "flex_adc": f"{flex:g}"}
+                              for ms, flex, _ in samples])
     print(f"Recorded {len(samples)} samples ({args.seconds:g} s) to "
           f"{show(path)}")
 
@@ -351,18 +392,18 @@ def run_stream(src, path: Path, args) -> None:
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("mode", choices=["therm", "fsr", "stream"])
+    p.add_argument("mode", choices=["therm", "flex", "stream"])
     p.add_argument("--port", help="serial port (default: auto-detect the Uno)")
     p.add_argument("--baud", type=int, default=115200)
     p.add_argument("--out", type=Path, help="output CSV (default: calibration/data/<mode file>)")
     p.add_argument("--new", action="store_true", help="start a fresh file (old one kept as .bak)")
     p.add_argument("--samples", type=int, help="samples averaged per point "
-                   "(default 100 therm, 50 fsr)")
+                   "(default 100 therm, 50 flex)")
     p.add_argument("--settle-tol", type=float, default=0.5,
                    help="therm: counts of change per second that counts as settled")
     p.add_argument("--settle-timeout", type=float, default=90, help="therm: max seconds to wait")
-    p.add_argument("--fsr-settle-s", type=float, default=2.0,
-                   help="fsr: seconds to wait after placing a mass")
+    p.add_argument("--flex-settle-s", type=float, default=1.0,
+                   help="flex: seconds to wait after reaching each angle")
     p.add_argument("--seconds", type=float, default=15, help="stream: recording length")
     p.add_argument("--sim", action="store_true", help="simulated sensor, no hardware")
     args = p.parse_args()
@@ -379,7 +420,7 @@ def main() -> None:
     else:
         src = SerialSource(args.port or find_port(), args.baud)
 
-    {"therm": run_therm, "fsr": run_fsr, "stream": run_stream}[args.mode](src, path, args)
+    {"therm": run_therm, "flex": run_flex, "stream": run_stream}[args.mode](src, path, args)
 
 
 if __name__ == "__main__":

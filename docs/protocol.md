@@ -2,15 +2,15 @@
 
 ## Telemetry (Uno to laptop, ~20 Hz)
 
-    T,ms,mode,fsr_raw,fsr_N,fsr_filt,tof_raw_mm,tof_filt_mm,th_raw,temp_C,slot_count,slot_rpm,servo_deg,dc_deg,dc_rpm,dc_pwm,step_deg,step_target_deg,interlock
+    T,ms,mode,flex_raw,flex_deg,flex_filt_deg,tof_raw_mm,tof_filt_mm,th_raw,temp_C,slot_count,slot_rpm,servo_deg,dc_deg,dc_rpm,dc_pwm,step_deg,step_target_deg,interlock
 
 | Field | Units | Notes |
 |---|---|---|
 | ms | ms | millis() |
 | mode | 0/1 | 0 = GUI, 1 = SENSOR |
-| fsr_raw | ADC counts | 0 to 1023 |
-| fsr_N | N | Unfiltered force |
-| fsr_filt | N | Filtered force |
+| flex_raw | ADC counts | 0 to 1023, falls as the sensor bends |
+| flex_deg | deg | Unfiltered bend angle, 1 decimal |
+| flex_filt_deg | deg | Filtered bend angle (EMA), 1 decimal |
 | tof_raw_mm | mm | |
 | tof_filt_mm | mm | |
 | th_raw | ADC counts | |

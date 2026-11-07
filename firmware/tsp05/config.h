@@ -20,7 +20,7 @@
 #define PIN_STEP_EN      12   // active LOW
 
 // ---------- Analog sensors ----------
-#define PIN_FSR          A0   // 5V -> FSR -> A0 -> 10k -> GND
+#define PIN_FLEX         A0   // 5V -> flex sensor -> A0 -> 10k -> GND
 #define PIN_THERM        A1   // 5V -> 10k -> A1 -> thermistor -> GND
 
 // ---------- User input ----------
@@ -39,8 +39,8 @@
 
 // Fixed divider resistors. Nominal 10k; measure yours with a multimeter
 // and put the real values here (a 5% resistor is up to ~1 degC of error).
-#define FSR_FIXED_R_OHMS      10000.0f // A0 -> GND
-#define THERM_FIXED_R_OHMS    10000.0f // 5V -> A1
+#define FLEX_FIXED_R_OHMS     9790.0f  // measured 2026-11-07
+#define THERM_FIXED_R_OHMS    10030.0f // measured 2026-11-07
 
 // Thermistor (Beta model). Verify B on the SparkFun datasheet.
 #define THERM_R0_OHMS         10000.0f // resistance at T0
@@ -50,7 +50,9 @@
 #define THERM_ADC_SHORT       5        // at/below: shorted thermistor -> fault
 #define THERM_ADC_OPEN        1018     // at/above: unplugged thermistor -> fault
 
-// FSR
-#define FSR_ADC_DEADZONE      3        // at/below: no press, report 0 N
-#define FSR_MAX_N             100.0f   // clamp (Adafruit FSR rated to ~10 kg)
-#define FSR_EMA_ALPHA         0.2f     // 0..1, higher = less smoothing, less lag
+// Flex sensor (Adafruit 182): ~10k flat, ~20k bent; resistance rises with bend
+#define FLEX_ADC_OPEN         5        // at/below: unplugged flex sensor -> fault
+#define FLEX_ADC_SHORT        1018     // at/above: shorted flex sensor -> fault
+#define FLEX_DEG_MIN          -30.0f   // clamp (bending backwards reads slightly negative)
+#define FLEX_DEG_MAX          180.0f   // clamp
+#define FLEX_EMA_ALPHA        0.2f     // 0..1, higher = less smoothing, less lag

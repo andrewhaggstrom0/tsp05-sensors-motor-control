@@ -22,7 +22,7 @@ TESTS = m.REPO / "firmware" / "tests"
 BIN = TESTS / "build" / "dump_conversions"
 
 TOL_C = 0.05   # degC: float (Uno) vs double (Python) rounding
-TOL_N = 0.05   # N
+TOL_DEG = 0.05  # degrees
 
 
 def build_and_run() -> str:
@@ -40,14 +40,17 @@ def build_and_run() -> str:
 def main() -> int:
     rows = list(csv.DictReader(io.StringIO(build_and_run())))
     bad = 0
-    worst_c = worst_n = 0.0
+    worst_c = worst_d = 0.0
     for r in rows:
         adc = int(r["adc"])
-        fw_n, py_n = float(r["fsr_N"]), m.fsr_newtons_from_adc(adc)
-        worst_n = max(worst_n, abs(fw_n - py_n))
-        if abs(fw_n - py_n) > TOL_N:
+        fw_d, py_d = float(r["flex_deg"]), m.flex_deg_from_adc(adc)
+        worst_d = max(worst_d, abs(fw_d - py_d))
+        if abs(fw_d - py_d) > TOL_DEG:
             bad += 1
-            print(f"FSR mismatch at adc {adc}: firmware {fw_n:.4f} N, model {py_n:.4f} N")
+            print(f"Flex mismatch at adc {adc}: firmware {fw_d:.4f} deg, model {py_d:.4f} deg")
+        if (r["flex_fault"] == "1") != m.flex_adc_is_fault(adc):
+            bad += 1
+            print(f"Flex fault mismatch at adc {adc}")
 
         fw_fault, py_fault = r["therm_fault"] == "1", m.therm_adc_is_fault(adc)
         if fw_fault != py_fault:
@@ -70,13 +73,13 @@ def main() -> int:
         if abs(back - t) > 1e-6:
             bad += 1
             print(f"Thermistor round trip failed: {t} -> {back}")
-    for f in (0.5, 1, 5, 10, 50):
-        back = m.fsr_newtons_from_adc(m.adc_from_fsr_newtons(f))
-        if abs(back - f) > 1e-6:
+    for d in (0, 15, 45, 90):
+        back = m.flex_deg_from_adc(m.adc_from_flex_deg(d))
+        if abs(back - d) > 1e-6:
             bad += 1
-            print(f"FSR round trip failed: {f} -> {back}")
+            print(f"Flex round trip failed: {d} -> {back}")
 
-    print(f"{len(rows)} ADC values checked; worst diff {worst_c:.4f} C, {worst_n:.4f} N; "
+    print(f"{len(rows)} ADC values checked; worst diff {worst_c:.4f} C, {worst_d:.4f} deg; "
           f"{bad} problems")
     return 1 if bad else 0
 

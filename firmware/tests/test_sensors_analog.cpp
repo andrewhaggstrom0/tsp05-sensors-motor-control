@@ -18,14 +18,20 @@ using namespace analog_math;
 
 // Independent reference (double precision) to check the firmware math
 static double refThermC(double adc) {
-  double r = 10000.0 * adc / (1023.0 - adc);
-  return 1.0 / (1.0 / 298.15 + std::log(r / 10000.0) / 3950.0) - 273.15;
+  // Uses the config.h constants, so it stays valid after measured resistor
+  // values or a datasheet B are put in config.h.
+  double r = (double)THERM_FIXED_R_OHMS * adc / (1023.0 - adc);
+  return 1.0 / (1.0 / (double)THERM_T0_K + std::log(r / (double)THERM_R0_OHMS) / (double)THERM_BETA)
+         - 273.15;
 }
 
 static void test_thermistor_math() {
-  // Divider midpoint means R_t = R_fixed = R0, so exactly 25 degC
-  float c = thermCFromOhms(thermOhmsFromAdc(511.5f));
-  CHECK(std::fabs(c - 25.0f) < 0.01f, "midpoint gave %.3f C, want 25", c);
+  // When R_t = R0 the temperature is exactly T0 (25 degC). That happens at
+  // adc = 1023 * R0 / (R_fixed + R0), which is 511.5 only if R_fixed = R0.
+  float adcAtT0 = 1023.0f * THERM_R0_OHMS / (THERM_FIXED_R_OHMS + THERM_R0_OHMS);
+  float c = thermCFromOhms(thermOhmsFromAdc(adcAtT0));
+  float t0c = THERM_T0_K - 273.15f;
+  CHECK(std::fabs(c - t0c) < 0.01f, "R_t = R0 gave %.3f C, want %.2f", c, t0c);
 
   // Matches double-precision reference across the usable range
   for (int adc = 50; adc <= 970; adc += 20) {
@@ -43,11 +49,16 @@ static void test_thermistor_math() {
     prev = t;
   }
 
-  // Expected rough operating points (from the team guide discussion)
-  float t0 = thermCFromOhms(thermOhmsFromAdc(783.0f));
-  float t37 = thermCFromOhms(thermOhmsFromAdc(383.0f));
-  CHECK(std::fabs(t0 - 0.0f) < 1.5f, "783 counts gave %.2f C, want ~0", t0);
-  CHECK(std::fabs(t37 - 37.0f) < 1.5f, "383 counts gave %.2f C, want ~37", t37);
+  // Round trip at real operating points (ice bath, body): degC -> ohms (Beta
+  // law) -> counts (divider) -> back through the firmware. Uses config.h, so it
+  // holds for measured resistor values too.
+  const float pts[] = {0.0f, 37.0f, 55.0f};
+  for (float tc : pts) {
+    double rt = THERM_R0_OHMS * std::exp(THERM_BETA * (1.0 / (tc + 273.15) - 1.0 / THERM_T0_K));
+    float adc = (float)(1023.0 * rt / (THERM_FIXED_R_OHMS + rt));
+    float back = thermCFromOhms(thermOhmsFromAdc(adc));
+    CHECK(std::fabs(back - tc) < 0.05f, "%.0f C -> %.1f counts -> %.3f C", tc, adc, back);
+  }
 
   // Edge cases
   CHECK(thermOhmsFromAdc(0) < 0 && thermOhmsFromAdc(1023) < 0, "edge adc should be -1");
@@ -56,26 +67,36 @@ static void test_thermistor_math() {
   CHECK(!thermAdcIsFault(511), "midpoint must not be a fault");
 }
 
-static void test_fsr_math() {
-  CHECK(fsrNewtonsFromAdc(0) == 0.0f, "no press should be 0 N");
-  CHECK(fsrNewtonsFromAdc(FSR_ADC_DEADZONE) == 0.0f, "deadzone should be 0 N");
-  CHECK(fsrOhmsFromAdc(0) < 0, "adc 0 should report open (-1)");
+static double refFlexOhms(double adc) {
+  return (double)FLEX_FIXED_R_OHMS * (1023.0 - adc) / adc;
+}
 
-  float prev = -1.0f;
-  for (int adc = 0; adc <= ADC_MAX; adc++) {
-    float f = fsrNewtonsFromAdc((float)adc);
-    CHECK(std::isfinite(f), "adc %d gave non-finite force", adc);
-    CHECK(f >= 0.0f && f <= FSR_MAX_N, "adc %d gave %.2f N out of range", adc, f);
-    CHECK(f >= prev, "force not monotonic at adc %d", adc);
-    prev = f;
+static void test_flex_math() {
+  // Divider math against a double-precision reference
+  for (int adc = 50; adc <= 970; adc += 20) {
+    double want = refFlexOhms(adc);
+    float got = flexOhmsFromAdc((float)adc);
+    CHECK(std::fabs(got - want) / want < 1e-5, "adc %d: %.1f ohm want %.1f", adc, got, want);
   }
-  CHECK(fsrNewtonsFromAdc(1023) == FSR_MAX_N, "full scale should clamp to max");
+  CHECK(flexOhmsFromAdc(0) < 0 && flexOhmsFromAdc(1023) < 0, "edge adc should be -1");
 
-  // Table must be continuous at breakpoints (no jump at the knee)
-  // G = 1000 uS  <=>  R = 1000 ohm  <=>  adc = 1023*10k/(10k+1k)
-  float knee = 1023.0f * 10000.0f / 11000.0f;
-  float below = fsrNewtonsFromAdc(knee - 0.5f), above = fsrNewtonsFromAdc(knee + 0.5f);
-  CHECK(std::fabs(above - below) < 0.5f, "jump at knee: %.2f -> %.2f", below, above);
+  // Whatever table is loaded (placeholder or fitted): bending raises resistance,
+  // which lowers the A0 reading, so the angle must never decrease as adc falls,
+  // never be NaN, and stay inside the clamps.
+  float prev = -1e9f;
+  for (int adc = ADC_MAX - 1; adc >= 1; adc--) {
+    float d = flexDegFromAdc((float)adc);
+    CHECK(std::isfinite(d), "adc %d gave non-finite angle", adc);
+    CHECK(d >= FLEX_DEG_MIN && d <= FLEX_DEG_MAX, "adc %d gave %.1f deg out of range", adc, d);
+    CHECK(d >= prev, "angle not monotonic at adc %d", adc);
+    prev = d;
+  }
+  CHECK(flexDegFromOhms(1e9f) == FLEX_DEG_MAX, "huge R should clamp to max");
+  CHECK(flexDegFromOhms(0.0f) == FLEX_DEG_MIN, "zero R should clamp to min");
+
+  // Faults: unplugged sensor pulls A0 to 0, a short pulls it to 1023
+  CHECK(flexAdcIsFault(0) && flexAdcIsFault(1023), "open/short must be faults");
+  CHECK(!flexAdcIsFault(506), "flat reading must not be a fault");
 }
 
 static void test_ema() {
@@ -87,28 +108,52 @@ static void test_ema() {
 
 static void test_module_update() {
   fake_millis = 1000;
-  fake_adc[A0] = 0;      // no press
-  fake_adc[A1] = 512;    // ~25 C
+  // Flat-ish (10k) and bent (20k) readings. Expected angles come from the
+  // conversion function, so this test does not depend on which table is loaded.
+  int adcFlat = (int)lround(1023.0 * FLEX_FIXED_R_OHMS / (FLEX_FIXED_R_OHMS + 10000.0));
+  fake_adc[A0] = adcFlat;
+  fake_adc[A1] = 512;    // ~25 C with nominal parts
   analogSensorsInit();
   CHECK(!thermistorFault(), "good reading should clear fault");
-  CHECK(std::fabs(thermistorC() - 25.0f) < 0.2f, "init temp %.2f", thermistorC());
-  CHECK(fsrNewtons() == 0.0f && fsrNewtonsFiltered() == 0.0f, "init force should be 0");
+  CHECK(std::fabs(thermistorC() - (float)refThermC(512)) < 0.05f, "init temp %.2f, want %.2f",
+        thermistorC(), refThermC(512));
+  CHECK(!flexFault(), "flat flex reading should clear fault");
+  float degFlat = flexDegFromAdc((float)adcFlat);
+  CHECK(flexDeg() == degFlat && flexDegFiltered() == degFlat,
+        "first reading should seed the filter: %.2f / %.2f, want %.2f",
+        flexDeg(), flexDegFiltered(), degFlat);
 
   // Rate limiting: nothing happens before the period elapses
-  fake_adc[A0] = 900;
+  int adcBent = (int)lround(1023.0 * FLEX_FIXED_R_OHMS / (FLEX_FIXED_R_OHMS + 20000.0));
+  fake_adc[A0] = adcBent;
   long reads = fake_analog_reads;
   fake_millis += ANALOG_PERIOD_MS - 1;
   analogSensorsUpdate();
   CHECK(fake_analog_reads == reads, "update ran early (no ADC reads expected)");
-  CHECK(fsrRaw() == 0, "raw changed before period elapsed");
+  CHECK(flexRaw() == adcFlat, "raw changed before period elapsed");
 
   // After the period it samples, and the filter lags the raw value
   fake_millis += 1;
   analogSensorsUpdate();
-  CHECK(fsrRaw() == 900, "raw should update, got %d", fsrRaw());
-  CHECK(fsrNewtons() > 0.0f, "force should be > 0");
-  CHECK(fsrNewtonsFiltered() > 0.0f && fsrNewtonsFiltered() < fsrNewtons(),
-        "filtered (%.2f) should lag raw (%.2f)", fsrNewtonsFiltered(), fsrNewtons());
+  CHECK(flexRaw() == adcBent, "raw should update, got %d", flexRaw());
+  float degBent = flexDegFromAdc((float)adcBent);
+  CHECK(degBent > degFlat + 10.0f, "20k (%.1f deg) should read well above 10k (%.1f deg)",
+        degBent, degFlat);
+  CHECK(flexDeg() == degBent, "module should report %.2f deg, got %.2f", degBent, flexDeg());
+  CHECK(flexDegFiltered() > degFlat && flexDegFiltered() < flexDeg(),
+        "filtered (%.2f) should lag raw (%.2f)", flexDegFiltered(), flexDeg());
+
+  // Unplugged flex sensor: fault set, angle holds its last good value
+  float flexGood = flexDeg(), flexFiltGood = flexDegFiltered();
+  fake_adc[A0] = 0;
+  fake_millis += ANALOG_PERIOD_MS;
+  analogSensorsUpdate();
+  CHECK(flexFault(), "unplugged flex should fault");
+  CHECK(flexDeg() == flexGood && flexDegFiltered() == flexFiltGood, "angle should hold during fault");
+  fake_adc[A0] = adcBent;
+  fake_millis += ANALOG_PERIOD_MS;
+  analogSensorsUpdate();
+  CHECK(!flexFault(), "flex should recover");
 
   // Unplugged thermistor: fault set, temperature holds last good value
   float lastGood = thermistorC();
@@ -128,15 +173,15 @@ static void test_module_update() {
   // millis() rollover does not stall updates
   fake_millis = 0xFFFFFFFFu - 5;
   analogSensorsUpdate();
-  fake_adc[A0] = 0;
+  fake_adc[A0] = adcFlat;
   fake_millis = 0xFFFFFFFFu - 5 + ANALOG_PERIOD_MS;  // wraps past zero
   analogSensorsUpdate();
-  CHECK(fsrRaw() == 0, "update should run across millis() rollover");
+  CHECK(flexRaw() == adcFlat, "update should run across millis() rollover");
 }
 
 int main() {
   test_thermistor_math();
-  test_fsr_math();
+  test_flex_math();
   test_ema();
   test_module_update();
   printf("%d passed, %d failed\n", g_pass, g_fail);
