@@ -27,3 +27,28 @@
 
 ## Stepper wiring (corrected colors)
 A = red, C = blue, B = black, D = green
+
+## Analog sensors (Track 4)
+
+![Analog sensor wiring](figures/analog_wiring.png)
+
+Regenerate with `python3 tools/draw_wiring.py` (reads the resistor values from `config.h`).
+
+| Divider | Top | Middle node | Bottom |
+|---|---|---|---|
+| Flex sensor | 5V → flex sensor (Adafruit 182) | **A0** | 9.79 kΩ → GND |
+| Thermistor | 5V → 10.03 kΩ | **A1** | 10 kΩ NTC thermistor → GND |
+
+- Fixed resistors were measured with a multimeter; the values are in `config.h`
+  (`FLEX_FIXED_R_OHMS`, `THERM_FIXED_R_OHMS`). Measure again if a resistor is swapped.
+- Flex sensor: tape the crimped (pin) end down; it is fragile. Bend only in the
+  marked direction; bending the other way barely changes the reading.
+- Thermistor: on long leads so the bead can reach a cup of water; keep the legs
+  dry (zip-lock bag) during calibration, since water between the legs reads hot.
+
+| Check (Serial Monitor at 115200) | Expected |
+|---|---|
+| Flex flat / bent 90° | about 470 / about 305 counts |
+| Thermistor at 19 °C / pinched | about 583 / drops toward 450 counts |
+| Flex unplugged | 0 counts, `flexFault()` true |
+| Thermistor unplugged | 1023 counts, `thermistorFault()` true (treat as interlock active) |
