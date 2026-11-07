@@ -8,7 +8,7 @@
 | Sensor | Physical output | Controls |
 |---|---|---|
 | VL53L1X TOF | Distance (mm) | Servo angle |
-| Force-sensitive resistor | Force (N) | DC motor velocity |
+| Flex/bend sensor (Adafruit 182) | Bend angle (deg) | DC motor velocity |
 | Omron EE-SX1042 slot sensor | Event count, RPM | Stepper jog per event |
 | 10k thermistor | Temperature (degC) | DC motor thermal interlock |
 

@@ -12,7 +12,7 @@
 | D10 | EasyDriver STEP | |
 | D11 | EasyDriver DIR | |
 | D12 | EasyDriver ENABLE | Active LOW |
-| A0 | FSR divider | 10k to GND |
+| A0 | Flex sensor divider | 10k to GND |
 | A1 | Thermistor divider | 10k to 5V |
 | A2 | Pushbutton | INPUT_PULLUP |
 | A4 | VL53L1X SDA | |

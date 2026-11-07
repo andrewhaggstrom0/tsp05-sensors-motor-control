@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reference model of the Track 4 analog sensors (FSR on A0, thermistor on A1).
+"""Reference model of the Track 4 analog sensors (flex sensor on A0, thermistor on A1).
 
 Mirrors firmware/tsp05/sensors_analog.cpp in Python so that:
   * the firmware math can be cross-checked (tools/check_firmware_vs_model.py),
@@ -7,7 +7,7 @@ Mirrors firmware/tsp05/sensors_analog.cpp in Python so that:
   * the fake Arduino can produce physically realistic ADC counts
     (the inverse functions run physical units -> counts).
 
-Constants are read from firmware/tsp05/config.h and the FSR table from
+Constants are read from firmware/tsp05/config.h and the flex table from
 firmware/tsp05/sensors_analog.cpp, so there is one source of truth.
 Standard library only.
 
@@ -46,35 +46,35 @@ def _parse_float_array(path: Path, name: str) -> list[float]:
 
 C = _parse_defines(CONFIG_H)
 ADC_MAX = C["ADC_MAX"]
-FSR_FIXED_R = C["FSR_FIXED_R_OHMS"]
+FLEX_FIXED_R = C["FLEX_FIXED_R_OHMS"]
 THERM_FIXED_R = C["THERM_FIXED_R_OHMS"]
 THERM_R0 = C["THERM_R0_OHMS"]
 THERM_T0_K = C["THERM_T0_K"]
 THERM_BETA = C["THERM_BETA"]
 THERM_ADC_SHORT = C["THERM_ADC_SHORT"]
 THERM_ADC_OPEN = C["THERM_ADC_OPEN"]
-FSR_ADC_DEADZONE = C["FSR_ADC_DEADZONE"]
-FSR_MAX_N = C["FSR_MAX_N"]
-FSR_EMA_ALPHA = C["FSR_EMA_ALPHA"]
+FLEX_ADC_OPEN = C["FLEX_ADC_OPEN"]
+FLEX_ADC_SHORT = C["FLEX_ADC_SHORT"]
+FLEX_DEG_MIN = C["FLEX_DEG_MIN"]
+FLEX_DEG_MAX = C["FLEX_DEG_MAX"]
+FLEX_EMA_ALPHA = C["FLEX_EMA_ALPHA"]
 
-FSR_G_US = _parse_float_array(MODULE_CPP, "FSR_G_US")
-FSR_N = _parse_float_array(MODULE_CPP, "FSR_N")
+FLEX_R_OHMS = _parse_float_array(MODULE_CPP, "FLEX_R_OHMS")
+FLEX_DEG = _parse_float_array(MODULE_CPP, "FLEX_DEG")
 
 
 # ----------------------------------------------------------------------------
 # Forward: ADC counts -> physical units (same as the firmware)
 # ----------------------------------------------------------------------------
-def fsr_ohms_from_adc(adc: float) -> float:
-    """5V -> FSR -> A0 -> R_fixed -> GND.  -1 means open (no press)."""
-    if adc <= 0:
+def flex_ohms_from_adc(adc: float) -> float:
+    """5V -> flex -> A0 -> R_fixed -> GND.  -1 means out of range."""
+    if adc <= 0 or adc >= ADC_MAX:
         return -1.0
-    if adc >= ADC_MAX:
-        return 0.0
-    return FSR_FIXED_R * (ADC_MAX - adc) / adc
+    return FLEX_FIXED_R * (ADC_MAX - adc) / adc
 
 
 def _interp(x: float, xs: list[float], ys: list[float]) -> float:
-    """Piecewise-linear, extrapolating the last segment (matches firmware)."""
+    """Piecewise-linear, extrapolating the end segments (matches firmware)."""
     i = 1
     while i < len(xs) - 1 and x > xs[i]:
         i += 1
@@ -82,12 +82,20 @@ def _interp(x: float, xs: list[float], ys: list[float]) -> float:
     return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
 
 
-def fsr_newtons_from_adc(adc: float) -> float:
-    if adc <= FSR_ADC_DEADZONE:
-        return 0.0
-    r = max(fsr_ohms_from_adc(adc), 1.0)
-    g_us = 1e6 / r
-    return min(max(_interp(g_us, FSR_G_US, FSR_N), 0.0), FSR_MAX_N)
+def flex_deg_from_ohms(ohms: float, r_table=None, deg_table=None) -> float:
+    d = _interp(ohms, r_table or FLEX_R_OHMS, deg_table or FLEX_DEG)
+    if not d >= FLEX_DEG_MIN:          # also catches NaN, like the firmware
+        d = FLEX_DEG_MIN
+    return min(d, FLEX_DEG_MAX)
+
+
+def flex_deg_from_adc(adc: float) -> float:
+    r = flex_ohms_from_adc(adc)
+    return FLEX_DEG_MIN if r < 0 else flex_deg_from_ohms(r)
+
+
+def flex_adc_is_fault(adc: float) -> bool:
+    return adc <= FLEX_ADC_OPEN or adc >= FLEX_ADC_SHORT
 
 
 def therm_ohms_from_adc(adc: float) -> float:
@@ -112,7 +120,7 @@ def therm_adc_is_fault(adc: float) -> bool:
     return adc <= THERM_ADC_SHORT or adc >= THERM_ADC_OPEN
 
 
-def ema(prev: float, sample: float, alpha: float = FSR_EMA_ALPHA) -> float:
+def ema(prev: float, sample: float, alpha: float = FLEX_EMA_ALPHA) -> float:
     return prev + alpha * (sample - prev)
 
 
@@ -130,26 +138,29 @@ def adc_from_therm_c(temp_c: float) -> float:
     return ADC_MAX * r / (THERM_FIXED_R + r)
 
 
-def adc_from_fsr_newtons(force_n: float) -> float:
-    """Inverse of the FSR table. 0 N -> 0 counts (FSR open)."""
-    if force_n <= 0:
-        return 0.0
-    force_n = min(force_n, FSR_MAX_N)
-    g_us = _interp(force_n, FSR_N, FSR_G_US)   # table is monotonic, so invert it
-    r = 1e6 / g_us
-    return ADC_MAX * FSR_FIXED_R / (r + FSR_FIXED_R)
+def flex_ohms_from_deg(deg: float) -> float:
+    """Inverse of the flex table (the table is monotonic, so swap the axes)."""
+    return _interp(deg, FLEX_DEG, FLEX_R_OHMS)
+
+
+def adc_from_flex_ohms(ohms: float) -> float:
+    return ADC_MAX * FLEX_FIXED_R / (ohms + FLEX_FIXED_R)
+
+
+def adc_from_flex_deg(deg: float) -> float:
+    return adc_from_flex_ohms(flex_ohms_from_deg(deg))
 
 
 def _main() -> None:
     print(f"Constants from {CONFIG_H.relative_to(REPO)}: B={THERM_BETA:g}, "
-          f"R0={THERM_R0:g}, R_fixed(therm)={THERM_FIXED_R:g}, R_fixed(fsr)={FSR_FIXED_R:g}")
-    print(f"FSR table (uS -> N): {list(zip(FSR_G_US, FSR_N))}\n")
+          f"R0={THERM_R0:g}, R_fixed(therm)={THERM_FIXED_R:g}, R_fixed(flex)={FLEX_FIXED_R:g}")
+    print(f"Flex table (ohm -> deg): {list(zip(FLEX_R_OHMS, FLEX_DEG))}\n")
     print("Thermistor:  temp_C -> adc")
     for t in (0, 10, 20, 25, 30, 37, 45, 60):
         print(f"  {t:5.1f} C  -> {adc_from_therm_c(t):7.1f} counts")
-    print("\nFSR:  force_N -> adc")
-    for f in (0, 0.5, 1, 2, 5, 10, 20, 50):
-        print(f"  {f:5.1f} N  -> {adc_from_fsr_newtons(f):7.1f} counts")
+    print("\nFlex:  bend deg -> adc")
+    for d in (0, 15, 30, 45, 60, 75, 90):
+        print(f"  {d:5.1f} deg -> {adc_from_flex_deg(d):7.1f} counts")
 
 
 if __name__ == "__main__":

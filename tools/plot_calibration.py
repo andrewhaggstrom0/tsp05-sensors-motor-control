@@ -7,18 +7,18 @@ One command regenerates everything from whatever CSVs exist:
 
   calibration/data/thermistor.csv  -> plots/thermistor_transfer.png  (graded format:
                                       degC on x, ADC counts on y) + error table
-  calibration/data/fsr.csv         -> plots/fsr_calibration.png + fitted firmware
-                                      table + error table
-  calibration/data/fsr_filter.csv  -> plots/fsr_filter.png (raw vs EMA filtered)
+  calibration/data/flex.csv        -> plots/flex_calibration.png (bend angle on x,
+                                      ADC counts on y) + fitted firmware table + error table
+  calibration/data/flex_filter.csv -> plots/flex_filter.png (raw vs EMA filtered)
   all tables                       -> calibration/results.md (paste into README)
 
-Conversions come from tools/analog_model.py, which reads config.h and the FSR
+Conversions come from tools/analog_model.py, which reads config.h and the flex
 table in sensors_analog.cpp, so the figures always match the firmware.
 
 Other options:
     --data calibration/sim_data        rehearse on simulated data (outputs stay
                                        in calibration/sim_data/, git-ignored)
-    --apply-fsr-table                  write the fitted FSR table into
+    --apply-flex-table                 write the fitted flex table into
                                        firmware/tsp05/sensors_analog.cpp
     --alphas 0.1 0.4                   extra EMA alphas to compare on the filter plot
 
@@ -170,151 +170,150 @@ def thermistor(data: Path, plots: Path) -> str:
 
 
 # ----------------------------------------------------------------------------
-# FSR
+# Flex sensor
 # ----------------------------------------------------------------------------
-def conductance_us(adc: float) -> float:
-    if adc <= m.FSR_ADC_DEADZONE:
-        return 0.0
-    return 1e6 / max(m.fsr_ohms_from_adc(adc), 1.0)
+def fit_flex(r: np.ndarray, deg: np.ndarray) -> dict:
+    """Bend angle vs sensor resistance: a straight line, or two straight
+    segments joined at a knee. Chosen by leave-one-out RMS so the extra knee
+    only wins if it predicts unseen points clearly better."""
 
+    def design(rv, knee):
+        rv = np.atleast_1d(np.asarray(rv, float))
+        cols = [np.ones_like(rv), rv if knee is None else np.minimum(rv, knee)]
+        if knee is not None:
+            cols.append(np.maximum(rv - knee, 0.0))
+        return np.column_stack(cols)
 
-def fit_fsr(g: np.ndarray, f: np.ndarray) -> dict:
-    """Force vs conductance through the origin: a straight line, or two
-    straight segments joined at a knee. Chosen by leave-one-out RMS so the
-    extra knee only wins if it predicts unseen points better."""
-
-    def design(gv, knee):
-        if knee is None:
-            return gv[:, None]
-        return np.column_stack([np.minimum(gv, knee), np.maximum(gv - knee, 0.0)])
-
-    def solve(gv, fv, knee):
-        coef, *_ = np.linalg.lstsq(design(gv, knee), fv, rcond=None)
+    def solve(rv, dv, knee):
+        coef, *_ = np.linalg.lstsq(design(rv, knee), dv, rcond=None)
         return coef
+
+    def monotonic(c):
+        return np.all(c[1:] > 0)          # more bend -> more resistance
 
     def loo_rms(knee):
         e = []
-        for i in range(len(g)):
-            keep = np.arange(len(g)) != i
-            c = solve(g[keep], f[keep], knee)
-            if np.any(c <= 0):
+        for i in range(len(r)):
+            keep = np.arange(len(r)) != i
+            c = solve(r[keep], deg[keep], knee)
+            if not monotonic(c):
                 return math.inf
-            e.append((design(g[i:i + 1], knee) @ c)[0] - f[i])
+            e.append((design(r[i], knee) @ c)[0] - deg[i])
         return float(np.sqrt(np.mean(np.square(e))))
 
     best = {"knee": None, "loo": loo_rms(None)}
-    gs = np.unique(g[g > 0])
-    for knee in gs[2:-2]:   # at least 2 distinct points on each side
-        r = loo_rms(knee)
-        if r < 0.9 * best["loo"]:   # must clearly beat the simpler model
-            best = {"knee": float(knee), "loo": r}
-    coef = solve(g, f, best["knee"])
-    if np.any(coef <= 0):
-        best["knee"], coef = None, solve(g, f, None)
+    rs = np.unique(r)
+    for knee in rs[2:-2]:   # at least 2 distinct points on each side
+        v = loo_rms(knee)
+        if v < 0.9 * best["loo"]:
+            best = {"knee": float(knee), "loo": v}
+    coef = solve(r, deg, best["knee"])
+    if not monotonic(coef):
+        best["knee"], coef = None, solve(r, deg, None)
         best["loo"] = loo_rms(None)
-    best["coef"] = coef
-    best["predict"] = lambda gv: design(np.atleast_1d(np.asarray(gv, float)), best["knee"]) @ coef
+    best["predict"] = lambda rv: design(rv, best["knee"]) @ coef
 
-    # Firmware table: breakpoints in microsiemens -> newtons
-    g_end = float(np.ceil(g.max() / 100.0) * 100.0)
-    pts = [0.0] + ([best["knee"]] if best["knee"] else []) + [g_end]
-    best["table_g"] = [round(p, 1) for p in pts]
-    best["table_n"] = [round(float(best["predict"](p)[0]), 3) for p in pts]
+    # Firmware table: resistance breakpoints (ohms) -> degrees, spanning the data
+    r_lo = float(np.floor(r.min() / 100.0) * 100.0)
+    r_hi = float(np.ceil(r.max() / 100.0) * 100.0)
+    pts = [r_lo] + ([best["knee"]] if best["knee"] else []) + [r_hi]
+    best["table_r"] = [round(v, 0) for v in pts]
+    best["table_deg"] = [round(float(best["predict"](v)[0]), 2) for v in pts]
     return best
 
 
-def fsr(data: Path, plots: Path) -> tuple[str, dict]:
+def flex(data: Path, plots: Path) -> tuple[str, dict]:
     rows = read_csv(data)
-    force = np.array([float(r["force_N"]) for r in rows])
-    adc = np.array([float(r["adc_mean"]) for r in rows])
-    direction = np.array([r["direction"] for r in rows])
-    trial = np.array([int(r["trial"]) for r in rows])
-    mass = np.array([float(r["mass_g"]) for r in rows])
-    g = np.array([conductance_us(a) for a in adc])
-    if np.count_nonzero(force > 0) < 3:
-        sys.exit(f"{data}: need at least 3 loaded points")
+    ref = np.array([float(x["ref_deg"]) for x in rows])
+    adc = np.array([float(x["adc_mean"]) for x in rows])
+    std = np.array([float(x["adc_std"]) for x in rows])
+    direction = np.array([x["direction"] for x in rows])
+    trial = np.array([int(x["trial"]) for x in rows])
+    if len(np.unique(ref)) < 3:
+        sys.exit(f"{data}: need at least 3 different angles")
+    r = np.array([m.flex_ohms_from_adc(a) for a in adc])
+    if np.any(r <= 0):
+        sys.exit(f"{data}: an ADC reading is at 0 or 1023 (sensor unplugged or shorted?)")
 
-    fit = fit_fsr(g, force)
-    pred = fit["predict"](g)
-    err = pred - force
+    fit = fit_flex(r, ref)
+    pred = fit["predict"](r)
+    err = pred - ref
 
-    fig, ax = new_fig("FSR calibration: force vs conductance",
-                      f"Conductance G = 1/R_fsr from A0 with a {m.FSR_FIXED_R / 1000:g} kΩ "
-                      f"divider. {len(np.unique(trial))} trial(s), {len(force)} points")
-    gg = np.linspace(0, g.max() * 1.05, 300)
     kind = "two-segment fit" if fit["knee"] else "linear fit"
-    ax.plot(gg, fit["predict"](gg), color=MODEL, linewidth=1.5, label=f"Firmware table ({kind})")
-    for d, color, marker in (("load", SERIES[0], "o"), ("unload", SERIES[1], "^")):
+    fig, ax = new_fig("Flex sensor transfer function",
+                      f"A0 reading vs bend angle. {m.FLEX_FIXED_R / 1000:g} kΩ divider, "
+                      f"{len(np.unique(trial))} trial(s), {len(ref)} points")
+    rr = np.linspace(r.min() * 0.97, r.max() * 1.03, 300)
+    ax.plot(fit["predict"](rr), [m.adc_from_flex_ohms(v) for v in rr], color=MODEL,
+            linewidth=1.5, label=f"Firmware table ({kind})")
+    for d, color, marker in (("bend", SERIES[0], "o"), ("unbend", SERIES[1], "^")):
         sel = direction == d
         if sel.any():
-            ax.plot(g[sel], force[sel], marker, color=color, markersize=6.5,
+            ax.plot(ref[sel], adc[sel], marker, color=color, markersize=6.5,
                     markeredgecolor=SURFACE, markeredgewidth=1.2,
                     label=f"Measured, {d}ing", zorder=3)
-    ax.set_xlabel("FSR conductance (µS)")
-    ax.set_ylabel("Applied force (N)")
-    ax.set_xlim(left=0)
-    ax.set_ylim(bottom=0)
-    ax.legend(loc="upper left")
-    save(fig, plots / "fsr_calibration.png")
+    ax.set_xlabel("Bend angle (°)")
+    ax.set_ylabel("A0 reading (ADC counts)")
+    ax.legend(loc="upper right")
+    save(fig, plots / "flex_calibration.png")
 
-    # Hysteresis: same trial and mass, unloading vs loading
+    # Hysteresis: same trial and angle, unbending vs bending
     hyst = []
     for t in np.unique(trial):
-        for ms in np.unique(mass[(trial == t) & (mass > 0)]):
-            ld = (trial == t) & (mass == ms) & (direction == "load")
-            ul = (trial == t) & (mass == ms) & (direction == "unload")
-            if ld.any() and ul.any():
-                applied = force[ld].mean()
-                hyst.append((pred[ul].mean() - pred[ld].mean()) / applied)
-    loaded = force > 0
-    pct = 100 * err[loaded] / force[loaded]
+        for a in np.unique(ref[(trial == t) & (ref > 0)]):
+            b = (trial == t) & (ref == a) & (direction == "bend")
+            u = (trial == t) & (ref == a) & (direction == "unbend")
+            if b.any() and u.any():
+                hyst.append(pred[u].mean() - pred[b].mean())
     rms = float(np.sqrt(np.mean(err ** 2)))
 
     table = md_table(
-        ["Trial", "Direction", "Mass (g)", "Reference (N)", "ADC counts", "Fit (N)", "Error (N)", "Error (%)"],
-        [[t, d, f"{ms:g}", f"{fr:.3f}", f"{a:.1f}", f"{p:.3f}", f"{e:+.3f}",
-          f"{100 * e / fr:+.1f}" if fr > 0 else "n/a"]
-         for t, d, ms, fr, a, p, e in zip(trial, direction, mass, force, adc, pred, err)])
-    summary = (f"Fit: {kind} of force vs conductance through the origin. RMS error "
-               f"{rms:.3f} N, mean |error| {np.mean(np.abs(pct)):.1f} % of the applied force "
-               f"(loaded points), leave-one-out RMS {fit['loo']:.3f} N.")
+        ["Trial", "Direction", "Reference (°)", "ADC counts", "R (kΩ)", "Fit (°)",
+         "Error (°)"],
+        [[t, d, f"{a:g}", f"{c:.1f} ± {sd:.1f}", f"{rv / 1000:.2f}", f"{pv:.1f}", f"{e:+.1f}"]
+         for t, d, a, c, sd, rv, pv, e in zip(trial, direction, ref, adc, std, r, pred, err)])
+    summary = (f"Fit: {kind} of bend angle vs sensor resistance. RMS error {rms:.1f}°, "
+               f"max |error| {np.abs(err).max():.1f}° over {ref.min():g} to {ref.max():g}°, "
+               f"leave-one-out RMS {fit['loo']:.1f}°.")
     if hyst:
-        summary += (f" Hysteresis: unloading reads {100 * np.mean(hyst):+.1f} % of the applied "
-                    f"force relative to loading at the same mass (mean over {len(hyst)} pairs).")
-    print(f"  fsr: {kind}, RMS {rms:.3f} N, mean |error| {np.mean(np.abs(pct)):.1f} %")
+        summary += (f" Hysteresis: unbending reads {np.mean(hyst):+.1f}° relative to bending "
+                    f"at the same angle (mean over {len(hyst)} pairs).")
+    print(f"  flex: {kind}, RMS {rms:.1f} deg")
 
-    snippet = ("static const float FSR_G_US[] = {" + ", ".join(f"{v:.1f}f" for v in fit["table_g"])
-               + "};\nstatic const float FSR_N[]    = {"
-               + ", ".join(f"{v:.3f}f" for v in fit["table_n"]) + "};")
-    md = (f"### FSR\n\n![FSR calibration](plots/fsr_calibration.png)\n\n{table}\n\n{summary}\n\n"
+    snippet = ("static const float FLEX_R_OHMS[] = {" + ", ".join(f"{v:.1f}f" for v in fit["table_r"])
+               + "};\nstatic const float FLEX_DEG[]    = {"
+               + ", ".join(f"{v:.2f}f" for v in fit["table_deg"]) + "};")
+    md = (f"### Flex sensor\n\n![Flex sensor transfer function](plots/flex_calibration.png)\n\n"
+          f"{table}\n\n{summary}\n\n"
           f"Firmware table (`firmware/tsp05/sensors_analog.cpp`):\n\n```cpp\n{snippet}\n```\n")
     return md, fit
 
 
-def apply_fsr_table(fit: dict, source: Path) -> None:
+def apply_flex_table(fit: dict, source: Path) -> None:
     cpp = m.REPO / "firmware" / "tsp05" / "sensors_analog.cpp"
     s = cpp.read_text()
-    gv = ", ".join(f"{v:.1f}f" for v in fit["table_g"])
-    nv = ", ".join(f"{v:.3f}f" for v in fit["table_n"])
-    s, n1 = re.subn(r"static const float FSR_G_US\[\] = \{[^}]*\};",
-                    f"static const float FSR_G_US[] = {{{gv}}};", s)
-    s, n2 = re.subn(r"static const float FSR_N\[\]\s*= \{[^}]*\};",
-                    f"static const float FSR_N[]    = {{{nv}}};", s)
+    rv = ", ".join(f"{v:.1f}f" for v in fit["table_r"])
+    dv = ", ".join(f"{v:.2f}f" for v in fit["table_deg"])
+    s, n1 = re.subn(r"static const float FLEX_R_OHMS\[\] = \{[^}]*\};",
+                    f"static const float FLEX_R_OHMS[] = {{{rv}}};", s)
+    s, n2 = re.subn(r"static const float FLEX_DEG\[\]\s*= \{[^}]*\};",
+                    f"static const float FLEX_DEG[]    = {{{dv}}};", s)
     if n1 != 1 or n2 != 1:
-        sys.exit("Could not find the FSR table in sensors_analog.cpp; not changed.")
+        sys.exit("Could not find the flex table in sensors_analog.cpp; not changed.")
     stamp = f"Fitted by tools/plot_calibration.py from {show(source)} on {dt.date.today()}."
     # First apply: swap the placeholder note. Later applies: refresh the stamp line.
-    s = re.sub(r"PLACEHOLDER from the Adafruit FSR guide's approximation\. Replace with the\n"
-               r"// fit from step A4 \(calibration/data/fsr\.csv\)\. ",
+    s = re.sub(r"PLACEHOLDER from the Adafruit 182 spec \(~10k flat, ~20k bent\)\. Replace with\n"
+               r"// the fit from calibration/data/flex\.csv \(tools/plot_calibration\.py\n"
+               r"// --apply-flex-table\)\. ",
                stamp + "\n// ", s, count=1)
     s = re.sub(r"Fitted by tools/plot_calibration\.py [^\n]*? on \d{4}-\d{2}-\d{2}\.", stamp, s, count=1)
     cpp.write_text(s)
-    print(f"  updated FSR table in {show(cpp)}. Now run firmware/tests/run_tests.sh and "
+    print(f"  updated flex table in {show(cpp)}. Now run firmware/tests/run_tests.sh and "
           "python3 tools/check_firmware_vs_model.py")
 
 
 # ----------------------------------------------------------------------------
-# FSR filter
+# Flex filter
 # ----------------------------------------------------------------------------
 def ema_series(x: np.ndarray, alpha: float) -> np.ndarray:
     y = np.empty_like(x)
@@ -324,33 +323,32 @@ def ema_series(x: np.ndarray, alpha: float) -> np.ndarray:
     return y
 
 
-def fsr_filter(data: Path, plots: Path, extra_alphas: list[float]) -> str:
+def flex_filter(data: Path, plots: Path, extra_alphas: list[float]) -> str:
     rows = read_csv(data)
-    t = np.array([float(r["t_s"]) for r in rows])
-    raw = np.array([m.fsr_newtons_from_adc(float(r["fsr_adc"])) for r in rows])
+    t = np.array([float(x["t_s"]) for x in rows])
+    raw = np.array([m.flex_deg_from_adc(float(x["flex_adc"])) for x in rows])
     dt_s = float(np.median(np.diff(t)))
 
     def tau_ms(a):
         return -1000 * dt_s / math.log(1 - a)
 
-    alphas = [m.FSR_EMA_ALPHA] + [a for a in extra_alphas if a != m.FSR_EMA_ALPHA]
+    alphas = [m.FLEX_EMA_ALPHA] + [a for a in extra_alphas if a != m.FLEX_EMA_ALPHA]
 
-    # Noise is measured only while the force is held steady: skip released
-    # samples, real changes (presses), and the time the slowest filter needs
-    # to catch up afterwards (5 time constants). Otherwise the press edges,
-    # which are signal, would be counted as noise.
+    # Noise is measured only while the angle is held steady: skip real changes
+    # (bends and releases) and the time the slowest filter needs to catch up
+    # afterwards (5 time constants). Otherwise the bend edges, which are signal,
+    # would be counted as noise.
     d = np.diff(raw)
-    pressed = (raw[:-1] > 0) & (raw[1:] > 0)
-    sigma = 1.4826 * float(np.median(np.abs(d[pressed]))) if pressed.any() else 0.0
-    change = np.abs(d) > max(6 * sigma, 0.05)
+    sigma = 1.4826 * float(np.median(np.abs(d - np.median(d))))
+    change = np.abs(d) > max(6 * sigma, 0.5)
     settle = int(math.ceil(5 * max(tau_ms(a) for a in alphas[:3]) / 1000 / dt_s))
     busy = np.zeros(len(d), bool)
     for i in np.flatnonzero(change):
         busy[max(i - 1, 0): i + settle + 1] = True
-    hold = pressed & ~busy
+    hold = ~busy
 
-    fig, ax = new_fig("FSR filter: raw vs EMA filtered",
-                      f"Force from A0 at {1 / dt_s:.0f} Hz through the firmware table. "
+    fig, ax = new_fig("Flex sensor filter: raw vs EMA filtered",
+                      f"Bend angle from A0 at {1 / dt_s:.0f} Hz through the firmware table. "
                       f"EMA: y += α(x − y)")
     ax.plot(t, raw, color=SERIES[0], linewidth=1, alpha=0.55, label="Raw")
     lines = []
@@ -362,23 +360,24 @@ def fsr_filter(data: Path, plots: Path, extra_alphas: list[float]) -> str:
         if hold.sum() >= 10:
             n_raw = float(np.std(d[hold]))
             n_f = float(np.std(np.diff(y)[hold]))
-            lines.append(f"| {a:g}{tag} | {tau_ms(a):.0f} | {n_raw:.3f} | {n_f:.3f} | "
+            lines.append(f"| {a:g}{tag} | {tau_ms(a):.0f} | {n_raw:.2f} | {n_f:.2f} | "
                          f"{100 * (1 - n_f / n_raw):.0f} % |")
         else:
-            lines.append(f"| {a:g}{tag} | {tau_ms(a):.0f} | n/a | n/a | hold the force "
+            lines.append(f"| {a:g}{tag} | {tau_ms(a):.0f} | n/a | n/a | hold the bend "
                          "steady for a second or two to measure |")
     ax.set_xlabel("Time (s)")
-    ax.set_ylabel("Force (N)")
-    ax.set_ylim(0, max(raw.max(), 1e-3) * 1.35)   # headroom so the legend clears the data
+    ax.set_ylabel("Bend angle (°)")
+    lo, hi = float(raw.min()), float(raw.max())
+    ax.set_ylim(lo - 5, hi + 0.35 * (hi - lo) + 5)   # headroom so the legend clears the data
     ax.legend(loc="upper left", ncol=2)
-    save(fig, plots / "fsr_filter.png")
-    table = ("| α | Time constant (ms) | Raw noise (N) | Filtered noise (N) | Noise reduction |\n"
+    save(fig, plots / "flex_filter.png")
+    table = ("| α | Time constant (ms) | Raw noise (°) | Filtered noise (°) | Noise reduction |\n"
              "|---|---|---|---|---|\n" + "\n".join(lines))
-    return (f"### FSR filter\n\n![FSR filter](plots/fsr_filter.png)\n\n{table}\n\n"
-            "Noise = standard deviation of the sample-to-sample change while the force is "
-            f"held steady ({int(hold.sum())} samples; releases, press edges and filter settling "
-            "excluded). The time constant τ = −Δt / ln(1 − α) is the lag the filter adds: "
-            "less noise costs a slower response.\n")
+    return (f"### Flex sensor filter\n\n![Flex filter](plots/flex_filter.png)\n\n{table}\n\n"
+            "Noise = standard deviation of the sample-to-sample change while the bend is "
+            f"held steady ({int(hold.sum())} samples; bend edges and filter settling "
+            "excluded). The time constant τ = −Δt / ln(1 − α) is the lag the filter "
+            "adds: less noise costs a slower response.\n")
 
 
 # ----------------------------------------------------------------------------
@@ -466,8 +465,8 @@ def main() -> None:
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--data", type=Path, default=DATA_DIR, help="folder with the CSVs")
     p.add_argument("--plots", type=Path, help="output folder for PNGs")
-    p.add_argument("--apply-fsr-table", action="store_true",
-                   help="write the fitted FSR table into sensors_analog.cpp")
+    p.add_argument("--apply-flex-table", action="store_true",
+                   help="write the fitted flex table into sensors_analog.cpp")
     p.add_argument("--alphas", type=float, nargs="*", default=[],
                    help="extra EMA alphas to compare on the filter plot")
     p.add_argument("--timeseries", type=Path, help="plot any time series CSV instead")
@@ -498,12 +497,12 @@ def main() -> None:
         parts.append(thermistor(data / "thermistor.csv", plots))
         found = True
     fit = None
-    if (data / "fsr.csv").exists():
-        md, fit = fsr(data / "fsr.csv", plots)
+    if (data / "flex.csv").exists():
+        md, fit = flex(data / "flex.csv", plots)
         parts.append(md)
         found = True
-    if (data / "fsr_filter.csv").exists():
-        parts.append(fsr_filter(data / "fsr_filter.csv", plots, args.alphas))
+    if (data / "flex_filter.csv").exists():
+        parts.append(flex_filter(data / "flex_filter.csv", plots, args.alphas))
         found = True
     if not found:
         sys.exit(f"No calibration CSVs in {show(data)}. Record some with tools/log_serial.py "
@@ -517,13 +516,13 @@ def main() -> None:
     results.write_text(md)
     print(f"  wrote {show(results)}")
 
-    if args.apply_fsr_table:
+    if args.apply_flex_table:
         if fit is None:
-            sys.exit("--apply-fsr-table needs fsr.csv")
+            sys.exit("--apply-flex-table needs flex.csv")
         if not real:
             sys.exit("Refusing to write a table fitted to non-real data into the firmware. "
                      "Use calibration/data.")
-        apply_fsr_table(fit, data / "fsr.csv")
+        apply_flex_table(fit, data / "flex.csv")
 
 
 if __name__ == "__main__":

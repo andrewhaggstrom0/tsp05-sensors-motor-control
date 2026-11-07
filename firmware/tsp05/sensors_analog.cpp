@@ -4,40 +4,44 @@
 #include "sensors_analog.h"
 
 // ---------------------------------------------------------------------------
-// FSR calibration table: conductance (microsiemens = 1e6 / R) -> force (N).
-// PLACEHOLDER from the Adafruit FSR guide's approximation. Replace with the
-// fit from step A4 (calibration/data/fsr.csv). Breakpoints must be ascending.
-// Beyond the last point the last segment's slope is extrapolated, then clamped.
+// Flex calibration table: sensor resistance (ohms) -> bend angle (degrees).
+// PLACEHOLDER from the Adafruit 182 spec (~10k flat, ~20k bent). Replace with
+// the fit from calibration/data/flex.csv (tools/plot_calibration.py
+// --apply-flex-table). Breakpoints must be ascending.
+// Beyond either end the nearest segment's slope is extrapolated, then clamped.
 // ---------------------------------------------------------------------------
-static const float FSR_G_US[] = {0.0f, 1000.0f, 4000.0f};
-static const float FSR_N[]    = {0.0f,   12.5f,  112.5f};
-static const int   FSR_PTS    = sizeof(FSR_G_US) / sizeof(FSR_G_US[0]);
+static const float FLEX_R_OHMS[] = {10000.0f, 20000.0f};
+static const float FLEX_DEG[]    = {0.0f, 90.0f};
+static const int   FLEX_PTS      = sizeof(FLEX_R_OHMS) / sizeof(FLEX_R_OHMS[0]);
 
 namespace analog_math {
 
-float fsrOhmsFromAdc(float adc) {
-  // 5V -> FSR -> A0 -> R_fixed -> GND
-  if (adc <= 0.0f) return -1.0f;                 // open circuit: no press
-  if (adc >= ADC_MAX) return 0.0f;               // FSR fully shorted
-  return FSR_FIXED_R_OHMS * (ADC_MAX - adc) / adc;
+float flexOhmsFromAdc(float adc) {
+  // 5V -> flex -> A0 -> R_fixed -> GND
+  if (adc <= 0.0f || adc >= ADC_MAX) return -1.0f;
+  return FLEX_FIXED_R_OHMS * (ADC_MAX - adc) / adc;
 }
 
-float fsrNewtonsFromAdc(float adc) {
-  if (adc <= FSR_ADC_DEADZONE) return 0.0f;
-  float r = fsrOhmsFromAdc(adc);
-  if (r < 1.0f) r = 1.0f;                        // avoid divide by zero
-  float g = 1.0e6f / r;                          // microsiemens
-
+float flexDegFromOhms(float ohms) {
   // Piecewise-linear interpolation through the table
   int i = 1;
-  while (i < FSR_PTS - 1 && g > FSR_G_US[i]) i++;
-  float g0 = FSR_G_US[i - 1], g1 = FSR_G_US[i];
-  float n0 = FSR_N[i - 1],    n1 = FSR_N[i];
-  float f = n0 + (n1 - n0) * (g - g0) / (g1 - g0);
+  while (i < FLEX_PTS - 1 && ohms > FLEX_R_OHMS[i]) i++;
+  float r0 = FLEX_R_OHMS[i - 1], r1 = FLEX_R_OHMS[i];
+  float d0 = FLEX_DEG[i - 1],    d1 = FLEX_DEG[i];
+  float deg = d0 + (d1 - d0) * (ohms - r0) / (r1 - r0);
+  if (!(deg >= FLEX_DEG_MIN)) deg = FLEX_DEG_MIN;   // also catches NaN
+  if (deg > FLEX_DEG_MAX) deg = FLEX_DEG_MAX;
+  return deg;
+}
 
-  if (f < 0.0f) f = 0.0f;
-  if (f > FSR_MAX_N) f = FSR_MAX_N;
-  return f;
+float flexDegFromAdc(float adc) {
+  float r = flexOhmsFromAdc(adc);
+  if (r < 0.0f) return FLEX_DEG_MIN;
+  return flexDegFromOhms(r);
+}
+
+bool flexAdcIsFault(float adc) {
+  return adc <= FLEX_ADC_OPEN || adc >= FLEX_ADC_SHORT;
 }
 
 float thermOhmsFromAdc(float adc) {
@@ -66,10 +70,11 @@ float ema(float prev, float sample, float alpha) {
 // Module state
 // ---------------------------------------------------------------------------
 static uint32_t s_lastMs        = 0;   // uint32_t: same width as millis() on the Uno
-static bool  s_seeded           = false;
-static int   s_fsrRaw           = 0;
-static float s_fsrN             = 0.0f;
-static float s_fsrNFilt         = 0.0f;
+static bool  s_flexSeeded       = false;
+static int   s_flexRaw          = 0;
+static float s_flexDeg          = 0.0f;
+static float s_flexDegFilt      = 0.0f;
+static bool  s_flexFault        = true;    // until a good reading arrives
 static int   s_thRaw            = 0;
 static float s_thC              = 25.0f;   // replaced by first good reading
 static bool  s_thFault          = true;    // until a good reading arrives
@@ -82,11 +87,15 @@ static int readSettled(uint8_t pin) {
 }
 
 static void sampleAll() {
-  // FSR: one read, so "raw" really is raw for the filter plot
-  s_fsrRaw = readSettled(PIN_FSR);
-  s_fsrN   = analog_math::fsrNewtonsFromAdc((float)s_fsrRaw);
-  s_fsrNFilt = s_seeded ? analog_math::ema(s_fsrNFilt, s_fsrN, FSR_EMA_ALPHA)
-                        : s_fsrN;
+  // Flex: one read, so "raw" really is raw for the filter plot
+  s_flexRaw = readSettled(PIN_FLEX);
+  s_flexFault = analog_math::flexAdcIsFault((float)s_flexRaw);
+  if (!s_flexFault) {
+    s_flexDeg = analog_math::flexDegFromAdc((float)s_flexRaw);
+    s_flexDegFilt = s_flexSeeded ? analog_math::ema(s_flexDegFilt, s_flexDeg, FLEX_EMA_ALPHA)
+                                 : s_flexDeg;
+    s_flexSeeded = true;
+  }
 
   // Thermistor: average a few reads (temperature changes slowly)
   long sum = readSettled(PIN_THERM);
@@ -98,11 +107,10 @@ static void sampleAll() {
   if (!s_thFault) {
     s_thC = analog_math::thermCFromOhms(analog_math::thermOhmsFromAdc(adc));
   }
-  s_seeded = true;
 }
 
 void analogSensorsInit() {
-  pinMode(PIN_FSR, INPUT);
+  pinMode(PIN_FLEX, INPUT);
   pinMode(PIN_THERM, INPUT);
   sampleAll();                 // valid values before the first telemetry line
   s_lastMs = millis();
@@ -115,9 +123,10 @@ void analogSensorsUpdate() {
   sampleAll();
 }
 
-int   fsrRaw()             { return s_fsrRaw; }
-float fsrNewtons()         { return s_fsrN; }
-float fsrNewtonsFiltered() { return s_fsrNFilt; }
+int   flexRaw()            { return s_flexRaw; }
+float flexDeg()            { return s_flexDeg; }
+float flexDegFiltered()    { return s_flexDegFilt; }
+bool  flexFault()          { return s_flexFault; }
 int   thermistorRaw()      { return s_thRaw; }
 float thermistorC()        { return s_thC; }
 bool  thermistorFault()    { return s_thFault; }

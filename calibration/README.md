@@ -2,7 +2,7 @@
 
 Measured data lives in `data/`, generated figures in `plots/`. CSVs hold only
 measured or reference values; anything that depends on constants in
-`firmware/tsp05/config.h` (model temperature, model force, errors) is computed
+`firmware/tsp05/config.h` (model temperature, model angle, errors) is computed
 when the plots are made, so changing a constant never leaves stale numbers here.
 
 ## File schemas
@@ -15,22 +15,21 @@ when the plots are made, so changing a constant never leaves stale numbers here.
 | adc_std | ADC counts | Standard deviation of those samples |
 | n | samples | Samples averaged (100 = 2 s at 50 Hz) |
 
-### `data/fsr.csv` (one row per mass)
+### `data/flex.csv` (one row per angle)
 | Column | Units | Meaning |
 |---|---|---|
-| trial | # | Increments each time loading starts again after unloading |
-| direction | load/unload | Whether mass was being added or removed (shows hysteresis) |
-| mass_g | g | Total mass on the FSR, puck included (kitchen scale) |
-| force_N | N | Reference force, mass_g / 1000 x 9.81 |
-| adc_mean | ADC counts | Mean of `n` samples of A0, taken after a 2 s settle |
+| trial | # | Increments each time bending starts again after unbending |
+| direction | bend/unbend | Whether the angle was increasing or decreasing (shows hysteresis) |
+| ref_deg | degrees | Bend angle measured with a protractor (the reference) |
+| adc_mean | ADC counts | Mean of `n` samples of A0, taken after a 1 s settle |
 | adc_std | ADC counts | Standard deviation of those samples |
 | n | samples | Samples averaged (50 = 1 s) |
 
-### `data/fsr_filter.csv` (continuous recording)
+### `data/flex_filter.csv` (continuous recording)
 | Column | Units | Meaning |
 |---|---|---|
 | t_s | s | Time since the first sample |
-| fsr_adc | ADC counts | Raw A0 at 50 Hz (filtered force is computed from this) |
+| flex_adc | ADC counts | Raw A0 at 50 Hz (filtered angle is computed from this) |
 
 ## Procedure
 
@@ -43,9 +42,9 @@ pip install -r tools/requirements.txt
 
 ### Before you start
 - [ ] Measure both 10k fixed resistors with a multimeter. Put the real values in
-      `FSR_FIXED_R_OHMS` and `THERM_FIXED_R_OHMS` in `config.h`.
+      `FLEX_FIXED_R_OHMS` and `THERM_FIXED_R_OHMS` in `config.h`.
 - [ ] Check B (and R0) on the thermistor datasheet; update `THERM_BETA`.
-- [ ] Weigh the puck and every mass on a kitchen scale; write the numbers down.
+- [ ] Print or draw a protractor guide (0 to 90 degrees in 15 degree steps).
 
 ### Thermistor (A2)
 ```bash
@@ -59,20 +58,21 @@ thermometer reading; the script waits for the reading to settle, then captures.
 - Body: held in a closed hand (~33 to 35 degC; hand surface, not 37)
 - Warm water at 2 to 3 temperatures (e.g. ~40, ~50 degC), stirred
 
-### FSR (A4)
+### Flex sensor (A4)
 ```bash
-python3 tools/log_serial.py fsr
+python3 tools/log_serial.py flex
 ```
-Centre a small rigid puck (a coin) on the FSR's active area so every mass loads
-the same area. Type the **total** mass on the FSR each time. Go up in steps
-(0, 50, 100, 200, 500, 1000 g...), then back down. Do at least 2 trials;
-the script numbers them and tags load/unload for you.
+Tape the crimped end (where the pins are) flat to the table; that end is
+fragile. Bend the free end in the direction that gives the big change in A0,
+hold it at each angle against a protractor, type the angle, and keep holding
+until it prints `saved`. Go 0, 15, 30, 45, 60, 75, 90 then back down. The
+script tags bend/unbend and numbers the trials for you.
 
-### FSR filter recording (A5)
+### Flex filter recording (A5)
 ```bash
 python3 tools/log_serial.py stream --seconds 15
 ```
-Press and release the FSR a few times with different force.
+Bend to three different angles, holding each about 2 s and releasing between.
 
 ### Rehearsal without hardware
 Add `--sim` to any command. Simulated data goes to `calibration/sim_data/`
@@ -85,10 +85,10 @@ python3 tools/plot_calibration.py
 ```
 Reads every CSV in `data/` and writes `plots/*.png` plus `results.md` (all error
 tables, ready for the main README). Rerun it whenever a CSV or a constant in
-`config.h` changes. After the FSR calibration, write the fitted table into the
+`config.h` changes. After the flex calibration, write the fitted table into the
 firmware and re-verify:
 ```bash
-python3 tools/plot_calibration.py --apply-fsr-table
+python3 tools/plot_calibration.py --apply-flex-table
 firmware/tests/run_tests.sh && python3 tools/check_firmware_vs_model.py
 ```
 Compare filter settings with `--alphas 0.1 0.4`. Rehearse with
