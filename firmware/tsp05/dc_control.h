@@ -1,0 +1,44 @@
+#pragma once
+#include <stdint.h>
+
+namespace dc_control {
+
+enum Mode : uint8_t { IDLE, VELOCITY, POSITION };
+
+struct Pid {
+  float kp, ki, kd, iLimit;
+  float integ;
+  float prevErr;
+  bool  primed;
+};
+
+struct Ctrl {
+  Mode  mode;
+  long  lastCounts;
+  long  targetCounts;
+  float targetRpm;
+  float rpm;
+  bool  arrived;
+  Pid   vel, pos;
+};
+
+float degFromCounts(long counts);
+long  countsFromDeg(float deg);
+float rpmFromCounts(long dCounts, float dtS);
+
+// Maps a command in -255..255 onto the range the motor actually moves in: 0 stays 0,
+// anything else becomes +/-(deadband..255).
+int   deadbandComp(float u, int deadband);
+
+void  pidReset(Pid &p);
+float pidStep(Pid &p, float err, float dtS);
+
+void  ctrlInit(Ctrl &c, long counts);
+void  ctrlSetVelocity(Ctrl &c, float rpm);
+void  ctrlSetPosition(Ctrl &c, long targetCounts);
+void  ctrlStop(Ctrl &c);
+
+// One control period: updates the speed estimate from the new count, returns the PWM to apply.
+int   ctrlStep(Ctrl &c, long counts, float dtS);
+
+}
