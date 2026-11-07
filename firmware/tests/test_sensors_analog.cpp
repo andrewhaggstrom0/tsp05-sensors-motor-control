@@ -18,14 +18,20 @@ using namespace analog_math;
 
 // Independent reference (double precision) to check the firmware math
 static double refThermC(double adc) {
-  double r = 10000.0 * adc / (1023.0 - adc);
-  return 1.0 / (1.0 / 298.15 + std::log(r / 10000.0) / 3950.0) - 273.15;
+  // Uses the config.h constants, so it stays valid after measured resistor
+  // values or a datasheet B are put in config.h.
+  double r = (double)THERM_FIXED_R_OHMS * adc / (1023.0 - adc);
+  return 1.0 / (1.0 / (double)THERM_T0_K + std::log(r / (double)THERM_R0_OHMS) / (double)THERM_BETA)
+         - 273.15;
 }
 
 static void test_thermistor_math() {
-  // Divider midpoint means R_t = R_fixed = R0, so exactly 25 degC
-  float c = thermCFromOhms(thermOhmsFromAdc(511.5f));
-  CHECK(std::fabs(c - 25.0f) < 0.01f, "midpoint gave %.3f C, want 25", c);
+  // When R_t = R0 the temperature is exactly T0 (25 degC). That happens at
+  // adc = 1023 * R0 / (R_fixed + R0), which is 511.5 only if R_fixed = R0.
+  float adcAtT0 = 1023.0f * THERM_R0_OHMS / (THERM_FIXED_R_OHMS + THERM_R0_OHMS);
+  float c = thermCFromOhms(thermOhmsFromAdc(adcAtT0));
+  float t0c = THERM_T0_K - 273.15f;
+  CHECK(std::fabs(c - t0c) < 0.01f, "R_t = R0 gave %.3f C, want %.2f", c, t0c);
 
   // Matches double-precision reference across the usable range
   for (int adc = 50; adc <= 970; adc += 20) {
@@ -43,11 +49,16 @@ static void test_thermistor_math() {
     prev = t;
   }
 
-  // Expected rough operating points (from the team guide discussion)
-  float t0 = thermCFromOhms(thermOhmsFromAdc(783.0f));
-  float t37 = thermCFromOhms(thermOhmsFromAdc(383.0f));
-  CHECK(std::fabs(t0 - 0.0f) < 1.5f, "783 counts gave %.2f C, want ~0", t0);
-  CHECK(std::fabs(t37 - 37.0f) < 1.5f, "383 counts gave %.2f C, want ~37", t37);
+  // Round trip at real operating points (ice bath, body): degC -> ohms (Beta
+  // law) -> counts (divider) -> back through the firmware. Uses config.h, so it
+  // holds for measured resistor values too.
+  const float pts[] = {0.0f, 37.0f, 55.0f};
+  for (float tc : pts) {
+    double rt = THERM_R0_OHMS * std::exp(THERM_BETA * (1.0 / (tc + 273.15) - 1.0 / THERM_T0_K));
+    float adc = (float)(1023.0 * rt / (THERM_FIXED_R_OHMS + rt));
+    float back = thermCFromOhms(thermOhmsFromAdc(adc));
+    CHECK(std::fabs(back - tc) < 0.05f, "%.0f C -> %.1f counts -> %.3f C", tc, adc, back);
+  }
 
   // Edge cases
   CHECK(thermOhmsFromAdc(0) < 0 && thermOhmsFromAdc(1023) < 0, "edge adc should be -1");
@@ -71,9 +82,10 @@ static void test_fsr_math() {
   }
   CHECK(fsrNewtonsFromAdc(1023) == FSR_MAX_N, "full scale should clamp to max");
 
-  // Table must be continuous at breakpoints (no jump at the knee)
-  // G = 1000 uS  <=>  R = 1000 ohm  <=>  adc = 1023*10k/(10k+1k)
-  float knee = 1023.0f * 10000.0f / 11000.0f;
+  // No jump around G = 1000 uS (the placeholder table's knee).
+  // G uS  <=>  R = 1e6 / G ohm  <=>  adc = 1023 * R_fixed / (R_fixed + R)
+  float rKnee = 1.0e6f / 1000.0f;
+  float knee = 1023.0f * FSR_FIXED_R_OHMS / (FSR_FIXED_R_OHMS + rKnee);
   float below = fsrNewtonsFromAdc(knee - 0.5f), above = fsrNewtonsFromAdc(knee + 0.5f);
   CHECK(std::fabs(above - below) < 0.5f, "jump at knee: %.2f -> %.2f", below, above);
 }
@@ -88,10 +100,11 @@ static void test_ema() {
 static void test_module_update() {
   fake_millis = 1000;
   fake_adc[A0] = 0;      // no press
-  fake_adc[A1] = 512;    // ~25 C
+  fake_adc[A1] = 512;    // ~25 C with nominal parts
   analogSensorsInit();
   CHECK(!thermistorFault(), "good reading should clear fault");
-  CHECK(std::fabs(thermistorC() - 25.0f) < 0.2f, "init temp %.2f", thermistorC());
+  CHECK(std::fabs(thermistorC() - (float)refThermC(512)) < 0.05f, "init temp %.2f, want %.2f",
+        thermistorC(), refThermC(512));
   CHECK(fsrNewtons() == 0.0f && fsrNewtonsFiltered() == 0.0f, "init force should be 0");
 
   // Rate limiting: nothing happens before the period elapses

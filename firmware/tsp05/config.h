@@ -39,8 +39,8 @@
 
 // Fixed divider resistors. Nominal 10k; measure yours with a multimeter
 // and put the real values here (a 5% resistor is up to ~1 degC of error).
-#define FSR_FIXED_R_OHMS      10000.0f // A0 -> GND
-#define THERM_FIXED_R_OHMS    10000.0f // 5V -> A1
+#define FSR_FIXED_R_OHMS      9790.0f  // measured 2026-11-07
+#define THERM_FIXED_R_OHMS    10030.0f // measured 2026-11-07
 
 // Thermistor (Beta model). Verify B on the SparkFun datasheet.
 #define THERM_R0_OHMS         10000.0f // resistance at T0
