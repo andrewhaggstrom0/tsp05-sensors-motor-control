@@ -29,11 +29,13 @@ Needs pyserial for real hardware (pip install -r tools/requirements.txt).
 from __future__ import annotations
 
 import argparse
+import collections
 import csv
 import math
 import random
 import statistics
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -63,7 +65,15 @@ ARDUINO_VIDS = {0x2341, 0x2A03, 0x1A86, 0x10C4}
 # Sample sources
 # ----------------------------------------------------------------------------
 class SerialSource:
-    """The real Uno running firmware/bringup/analog."""
+    """The real Uno running firmware/bringup/analog.
+
+    A background thread reads the port continuously, so data never piles up
+    in the operating system, driver, or usbipd (WSL) buffers while you are
+    typing at a prompt. read(n) then returns only samples that arrive after it
+    is called. (Clearing the buffer with reset_input_buffer() is not enough
+    over usbipd: data still in flight arrives after the clear, so captures
+    started with seconds-old readings.)
+    """
 
     def __init__(self, port: str, baud: int):
         try:
@@ -81,27 +91,60 @@ class SerialSource:
         else:
             print(f"Warning: no bring-up banner from {port}. Is "
                   "firmware/bringup/analog flashed? Continuing anyway.")
+        self._cv = threading.Condition()
+        self._buf: collections.deque = collections.deque(maxlen=SAMPLE_HZ * 600)
+        self._count = 0          # samples received since connecting
+        self._error: BaseException | None = None
+        threading.Thread(target=self._pump, daemon=True).start()
+
+    def _pump(self) -> None:
+        bad = 0
+        try:
+            while True:
+                raw = self.ser.readline()
+                if not raw:
+                    continue                      # read() reports the stall
+                line = raw.decode(errors="replace").strip()
+                if not line or line.startswith("#"):
+                    continue
+                try:
+                    ms, flex, th = line.split(",")
+                    sample = (int(ms), float(flex), float(th))
+                except ValueError:
+                    bad += 1                      # e.g. a line cut by a reset
+                    if bad > 25:
+                        raise RuntimeError(f"too many malformed lines, last: {line!r}")
+                    continue
+                with self._cv:
+                    self._buf.append(sample)
+                    self._count += 1
+                    self._cv.notify_all()
+        except BaseException as e:               # surface it in read()
+            with self._cv:
+                self._error = e
+                self._cv.notify_all()
 
     def read(self, n: int) -> list[tuple[int, float, float]]:
-        """Next n samples as (ms, flex_adc, th_adc). Drops anything buffered."""
-        self.ser.reset_input_buffer()
-        out: list[tuple[int, float, float]] = []
-        bad = 0
-        while len(out) < n:
-            raw = self.ser.readline()
-            if not raw:
-                raise TimeoutError("no data for 1 s: check the port, the baud "
-                                   "rate, and that the bring-up sketch is running")
-            line = raw.decode(errors="replace").strip()
-            if not line or line.startswith("#"):
-                continue
-            try:
-                ms, flex, th = line.split(",")
-                out.append((int(ms), float(flex), float(th)))
-            except ValueError:
-                bad += 1  # a partial line after the buffer reset is normal
-                if bad > 25:
-                    raise RuntimeError(f"too many malformed lines, last: {line!r}")
+        """The next n samples that arrive after this call, as (ms, flex_adc, th_adc)."""
+        with self._cv:
+            start = self._count
+            last_progress, last_count = time.time(), start
+            while self._count - start < n:
+                if self._error:
+                    raise RuntimeError(f"serial reader stopped: {self._error}")
+                self._cv.wait(timeout=0.5)
+                if self._count != last_count:
+                    last_progress, last_count = time.time(), self._count
+                elif time.time() - last_progress > 2:
+                    raise TimeoutError("no data for 2 s: check the port, the baud rate, "
+                                       "and that the bring-up sketch is running")
+            got = self._count - start
+            out = list(self._buf)[-got:][:n]
+        # The Uno timestamps every sample; a jump means samples went missing.
+        gaps = [b[0] - a[0] for a, b in zip(out, out[1:])]
+        if gaps and max(gaps) > 5 * 1000 // SAMPLE_HZ:
+            print(f"  Warning: {max(gaps)} ms gap in the data (samples were lost). "
+                  "Redo this point.")
         return out
 
     def set_truth(self, **_kw) -> None:
