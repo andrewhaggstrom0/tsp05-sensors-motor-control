@@ -5,6 +5,7 @@
 //
 // Track 2 adds here: serial command parser, GUI/SENSOR mode, SENSOR-mode
 // mappings, thermal interlock, and the 20 Hz telemetry line (docs/protocol.md).
+// SENSOR mode: TOF -> servo, flex bend -> DC rpm, slot event -> stepper jog.
 
 #include <math.h>
 #include <stdlib.h>
@@ -99,11 +100,12 @@ static void runSensorMappings() {
   float t  = (mm - MAP_TOF_MIN_MM) / (float)(MAP_TOF_MAX_MM - MAP_TOF_MIN_MM);
   servoSetDeg(MAP_SERVO_MIN_DEG + t * (MAP_SERVO_MAX_DEG - MAP_SERVO_MIN_DEG));
 
-  // FSR force -> DC RPM, with a dead zone. Only send when it actually changes.
-  float n   = fsrNewtonsFiltered();
-  float rpm = 0.0f;
-  if (n > MAP_FSR_DEADZONE_N) {
-    float f = clampf((n - MAP_FSR_DEADZONE_N) / (MAP_FSR_FULL_N - MAP_FSR_DEADZONE_N), 0.0f, 1.0f);
+  // Flex bend angle -> DC RPM, with a dead zone. A flex fault means 0 rpm.
+  // Only send when it actually changes.
+  float bend = flexDegFiltered();
+  float rpm  = 0.0f;
+  if (!flexFault() && bend > MAP_FLEX_DEADZONE_DEG) {
+    float f = clampf((bend - MAP_FLEX_DEADZONE_DEG) / (MAP_FLEX_FULL_DEG - MAP_FLEX_DEADZONE_DEG), 0.0f, 1.0f);
     rpm = f * MAP_DC_MAX_RPM;
   }
   if (!g_mapRpmSent || fabs(rpm - g_lastMapRpm) >= 0.5f) {
@@ -172,9 +174,9 @@ static void buildTelemetry() {
   addStr("T");
   addLong((long)millis());
   addLong(g_mode);
-  addLong(fsrRaw());
-  addFloat(fsrNewtons(), 2);
-  addFloat(fsrNewtonsFiltered(), 2);
+  addLong(flexRaw());
+  addFloat(flexDeg(), 1);
+  addFloat(flexDegFiltered(), 1);
   addLong(tofRawMm());
   addFloat(tofFiltMm(), 1);
   addLong(thermistorRaw());
@@ -210,7 +212,7 @@ void setup() {
   dcInit();
   actuatorsInit();
   buttonInit();
-  Serial.println(F("TSP05 starting"));
+  Serial.println(F("# TSP05 starting"));   // '#' = comment line for the bridge
 }
 
 void loop() {
