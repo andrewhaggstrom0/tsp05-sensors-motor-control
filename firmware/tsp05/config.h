@@ -29,6 +29,19 @@
 // ---------- I2C (VL53L1X) ----------
 // SDA = A4, SCL = A5 (fixed on Uno)
 
+// ---------- Digital sensors: TOF + slot (Track 3) ----------
+#define TOF_I2C_HZ            400000UL // 400 kHz; drop to 100000UL if the bus is flaky
+#define TOF_TIMING_BUDGET_MS  33       // time per range. Allowed: 15, 20, 33, 50, 100, 200, 500
+#define TOF_PERIOD_MS         40       // time between ranges, >= budget (sensor default 100 = only 10 Hz)
+#define TOF_POLL_MS           5        // how often to ask the sensor "range ready?" over I2C
+#define TOF_MEDIAN_N          5        // median window: removes single-sample outliers (odd, <= 9)
+#define TOF_EMA_ALPHA         0.3f     // 0..1 after the median; higher = less smoothing, less lag
+#define TOF_STALE_MS          500      // no valid range for this long -> tofFault()
+#define SLOT_TABS             4        // tabs on the cardboard disc (events per revolution)
+#define SLOT_GLITCH_US        1000UL   // edges closer than this are bounce, not a new tab
+#define SLOT_RPM_PERIOD_MS    100      // RPM recomputed at 10 Hz
+#define SLOT_TIMEOUT_MS       2000     // no event for this long -> 0 RPM
+
 // ---------- Serial ----------
 #define SERIAL_BAUD      115200
 
