@@ -17,5 +17,5 @@ setup(
     description="Serial to ROS 2 bridge for the TSP05 Arduino Uno.",
     license="MIT",
     tests_require=["pytest"],
-    entry_points={"console_scripts": []},
+    entry_points={"console_scripts": ["bridge = tsp05_bridge.bridge_node:main"]},
 )
