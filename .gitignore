@@ -26,3 +26,7 @@ firmware/**/build/
 # Simulated calibration data from tools/log_serial.py --sim
 calibration/sim_data/
 *.csv.bak
+
+# Copies made by tools/sync_dc_bringup.sh (edit firmware/tsp05 instead)
+firmware/bringup/dc_pid/*.h
+firmware/bringup/dc_pid/*.cpp
