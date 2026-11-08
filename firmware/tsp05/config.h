@@ -56,3 +56,35 @@
 #define FLEX_DEG_MIN          -30.0f   // clamp (bending backwards reads slightly negative)
 #define FLEX_DEG_MAX          180.0f   // clamp
 #define FLEX_EMA_ALPHA        0.2f     // 0..1, higher = less smoothing, less lag
+
+// ---------- Servo (Track 2) ----------
+// Measured with firmware/bringup/servo: strains at 620 us, stalls at 2400 us.
+// Full safe travel 640-2380 us = 183 deg (~9.5 us/deg), so 0-180 deg = 640-2351 us.
+#define SERVO_MIN_US          640
+#define SERVO_MAX_US          2351
+#define SERVO_START_DEG       90.0f
+
+// ---------- Stepper (Track 2) ----------
+// EasyDriver default 1/8 microstep x 200 full steps = 1600 steps/rev (verify).
+#define STEPPER_STEPS_PER_REV 1600
+#define STEPPER_STEP_US       1250     // time between steps: 800 steps/s = 0.5 rev/s. Lower = faster
+
+// ---------- Button (Track 2) ----------
+#define BUTTON_DEBOUNCE_MS    30
+
+// ---------- Scheduler (Track 2) ----------
+#define TELEMETRY_PERIOD_MS   1000    // 20 Hz
+#define MAPPING_PERIOD_MS     20       // SENSOR-mode mappings, 50 Hz
+
+// ---------- SENSOR-mode mappings (Track 2; agree with team before changing) ----------
+#define MAP_TOF_MIN_MM        50       // at/below -> MAP_SERVO_MIN_DEG
+#define MAP_TOF_MAX_MM        400      // at/above -> MAP_SERVO_MAX_DEG
+#define MAP_SERVO_MIN_DEG     0.0f
+#define MAP_SERVO_MAX_DEG     180.0f
+#define MAP_FLEX_DEADZONE_DEG 10.0f    // bend below this -> 0 rpm
+#define MAP_FLEX_FULL_DEG     90.0f    // bend at/above this -> MAP_DC_MAX_RPM
+#define MAP_DC_MAX_RPM        60.0f
+#define MAP_SLOT_JOG_DEG      15.0f    // stepper jog per slot event
+
+// ---------- Thermal interlock (Track 2) ----------
+#define INTERLOCK_TEMP_C      30.0f    // above this (or thermistor fault) -> DC stops
