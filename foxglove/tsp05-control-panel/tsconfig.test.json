@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["./src/commands.ts", "./src/commands.test.ts"],
+  "exclude": [],
+  "compilerOptions": {
+    "outDir": "./build-test",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "lib": ["es2022", "dom"],
+    "types": ["node"],
+    "noEmit": false,
+    "jsx": "react-jsx"
+  }
+}

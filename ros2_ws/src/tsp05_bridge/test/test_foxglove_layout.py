@@ -51,3 +51,20 @@ def test_graded_plots_present(layout):
     plotted = {p["value"] for c in layout["configById"].values() for p in c.get("paths", [])}
     for pair in (("tof/raw_mm", "tof/filt_mm"), ("flex/deg", "flex/deg_filt"), ("dc/rpm", "cmd/dc_rpm")):
         assert {f"{t.NS}/{x}.data" for x in pair} <= plotted, pair
+
+
+PANEL_SRC = LAYOUT.parent / "tsp05-control-panel" / "src" / "commands.ts"
+
+
+@pytest.mark.skipif(not PANEL_SRC.exists(), reason="control panel source not in this checkout")
+def test_control_panel_topics_match_bridge():
+    """The TypeScript panel builds topics as `${NS}/...`; each must be a bridge topic,
+    and it must cover every command topic the bridge subscribes to."""
+    src = PANEL_SRC.read_text()
+    ns = re.search(r'export const NS = "([^"]+)"', src).group(1)
+    assert ns == t.NS
+    used = {f"{ns}/{name}" for name in re.findall(r"`\$\{NS\}/([a-z_/]+)`", src)}
+    assert used, "no topics found in commands.ts"
+    assert used <= KNOWN, f"unknown topics: {sorted(used - KNOWN)}"
+    commands = {f"{t.NS}/{c}" for c in t.COMMAND_TOPICS}
+    assert commands <= used, f"panel cannot send: {sorted(commands - used)}"
