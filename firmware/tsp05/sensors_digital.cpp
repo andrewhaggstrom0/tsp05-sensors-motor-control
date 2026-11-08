@@ -149,6 +149,7 @@ void digitalSensorsInit() {
   Wire.setWireTimeout(3000, true);           // a glitched bus can't freeze the loop
 #endif
 
+  s_tofPresent = false;                      // set again only if the sensor answers
   if (s_tof.begin() != 0) {                  // SparkFun lib: 0 = success
     Serial.println(F("# TOF not found: check 3V3, SDA=A4, SCL=A5, GND"));
     return;
