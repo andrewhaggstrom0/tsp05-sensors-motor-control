@@ -28,34 +28,15 @@ from rclpy.node import Node
 from std_msgs.msg import Bool, Empty, Float32, Int8, String
 
 from tsp05_bridge import protocol as p
+from tsp05_bridge.topics import COMMAND_TOPICS, FLAG_TOPICS, FLOAT_TOPICS, NS
 
 try:
     import serial  # pyserial
 except ImportError:  # pragma: no cover - reported at startup
     serial = None
 
-NS = "/tsp05"
-
-# telemetry field -> topic (std_msgs/Float32 unless listed in SPECIAL_TOPICS)
-FLOAT_TOPICS = {
-    "tof_raw_mm": "tof/raw_mm",
-    "tof_filt_mm": "tof/filt_mm",
-    "flex_raw": "flex/raw",
-    "flex_deg": "flex/deg",
-    "flex_filt_deg": "flex/deg_filt",
-    "th_raw": "thermistor/raw",
-    "temp_C": "thermistor/temp_c",
-    "slot_count": "slot/count",
-    "slot_rpm": "slot/rpm",
-    "servo_deg": "servo/deg",
-    "dc_deg": "dc/deg",
-    "dc_rpm": "dc/rpm",
-    "dc_pwm": "dc/pwm",
-    "step_deg": "stepper/deg",
-    "step_target_deg": "stepper/target_deg",
-    "ms": "uno_ms",
-}
-SPECIAL_TOPICS = {"mode": ("mode", Int8), "interlock": ("interlock", Bool)}
+# mode is std_msgs/Int8 and interlock std_msgs/Bool; every other field is Float32
+SPECIAL_TOPICS = {"mode": (FLAG_TOPICS["mode"], Int8), "interlock": (FLAG_TOPICS["interlock"], Bool)}
 assert set(FLOAT_TOPICS) | set(SPECIAL_TOPICS) == set(p.TELEMETRY_FIELDS)
 
 
@@ -82,6 +63,7 @@ class BridgeNode(Node):
             "cmd/dc_stop": (Empty, lambda m: p.cmd_dc_stop()),
             "cmd/stepper_deg": (Float32, lambda m: p.cmd_stepper_deg(m.data)),
         }
+        assert set(commands) == set(COMMAND_TOPICS)
         for topic, (msg_type, build) in commands.items():
             self.create_subscription(msg_type, f"{NS}/{topic}",
                                      lambda msg, b=build, t=topic: self._on_command(t, b, msg), 10)
