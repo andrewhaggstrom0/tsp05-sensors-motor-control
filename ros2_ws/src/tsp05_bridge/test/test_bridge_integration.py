@@ -8,6 +8,7 @@ protocol tests still run with plain pytest on any machine.
 """
 import math
 import os
+import random
 import subprocess
 import sys
 import tempfile
@@ -26,6 +27,12 @@ sys.path.insert(0, str(PKG))
 from tsp05_bridge.bridge_node import FLOAT_TOPICS, NS, SPECIAL_TOPICS, BridgeNode  # noqa: E402
 
 FAKE = PKG.parent.parent.parent / "tools" / "fake_arduino.py"
+
+
+def init_isolated():
+    """Own ROS domain, so a bridge already running on this machine (domain 0 by
+    default) cannot add its messages to the counts measured here."""
+    rclpy.init(domain_id=random.randint(50, 99))
 pytestmark = pytest.mark.skipif(not FAKE.exists(), reason="tools/fake_arduino.py not in this checkout")
 
 
@@ -99,7 +106,7 @@ class Harness:
 
 @pytest.fixture
 def env():
-    rclpy.init()
+    init_isolated()
     tmp = tempfile.mkdtemp()
     link = os.path.join(tmp, "tsp05")
     fake = Fake(link)
@@ -173,7 +180,7 @@ def test_reconnects_after_port_loss(env):
 
 
 def test_survives_malformed_lines():
-    rclpy.init()
+    init_isolated()
     link = os.path.join(tempfile.mkdtemp(), "tsp05")
     fake = Fake(link, "--bad-rate", "0.3")
     fake.start()
