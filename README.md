@@ -78,7 +78,29 @@ with `fsr/*` renamed to `flex/*`.
 ## Individual Contributions
 ### <Name 1>
 ### <Name 2>
-### <Name 3>
+### Harish Bhamitipadi Magesh (Track 3: TOF + slot sensor)
+- **TOF (VL53L1X, I2C)** (`firmware/tsp05/sensors_digital.cpp`): continuous ranging in
+  short mode, 33 ms timing budget, 40 ms inter-measurement period (the sensor's 100 ms
+  default would cap it at 10 Hz). Polled every 5 ms and read only when a range is ready,
+  so `loop()` never waits. I2C at 400 kHz with a Wire timeout, so a glitched bus cannot
+  hang the loop. Only status-0 ranges are used; `tofFault()` is raised after 500 ms
+  without one.
+- **Filter**: median of 5 (removes single-sample outliers), then EMA with alpha = 0.3.
+  Lag cost: the median delays a step by about 80 ms, and the EMA adds a 112 ms time constant.
+- **Slot sensor (EE-SX1042, D3 / INT1)**: RISING-edge interrupt with a 1 ms glitch
+  filter; edges are time-stamped into a ring buffer. `slotTakeEvents()` hands each event
+  to the stepper jog exactly once.
+- **RPM**: period method over one full revolution (4 tabs). Counting events in a 100 ms
+  window would resolve only 150 RPM per count. Spanning a whole revolution also cancels
+  unevenly cut tabs. RPM decays smoothly when the disc slows and reads 0 after 2 s.
+- **Integration**: the full `tsp05.ino` with this module uses 52 % flash and 45 % RAM
+  (team limit 75 %).
+- **Tools and tests**: bring-up sketch (`firmware/bringup/digital/`);
+  `tools/tof_calibration.py` (error logging, raw-vs-filtered recording, error table and
+  plots, `--sim` rehearsal); host tests (`firmware/tests/test_sensors_digital.cpp`,
+  37 checks) for the filter, faults, glitch filter, and RPM with uneven tabs.
+- **Not yet verified on hardware**: TOF error table, raw-vs-filtered plot, 50-pass
+  slot count test, RPM against the stepper at a known 30 RPM.
 ### <Name 4>
 ### Raoul Bouri (Track 5: ROS 2 bridge, Foxglove GUI, fake Arduino)
 - **Fake Arduino** (`tools/fake_arduino.py`): a pty that speaks `docs/protocol.md`,
@@ -107,6 +129,16 @@ with `fsr/*` renamed to `flex/*`.
 
 ## Challenges
 <!-- Per person: problem, analysis of cause, resolution -->
+
+### Harish Bhamitipadi Magesh
+- **RPM read low with unevenly cut tabs.** The first version of the slow-down limit
+  (so RPM decays instead of holding until the 2 s timeout) compared the gap in progress
+  with the average tab gap. With alternating 200 / 300 ms gaps (a steady 60 RPM) it read
+  as low as 55.6 RPM during every long gap. Cause: a gap that is normally long for that
+  tab looked like the disc slowing down. Fix: compare the gap in progress with the same
+  gap one revolution earlier. A host test now holds steady uneven-tab RPM within
+  60.0 +- 0.5.
+- Hardware challenges to follow.
 
 ### Raoul Bouri
 - **The fake Arduino stalled when nothing read the port.** A `D,P,90` measured after
