@@ -1,0 +1,10 @@
+# Added by run.sh when TSP05_SERIAL_DEVICE is set (Linux hosts only):
+#   TSP05_SERIAL_DEVICE=/dev/ttyACM0 docker/run.sh
+# Docker Desktop on macOS cannot pass USB devices into a container; there,
+# share the port over TCP and use port:=socket://host.docker.internal:<port>.
+services:
+  dev:
+    devices:
+      - "${TSP05_SERIAL_DEVICE}:${TSP05_SERIAL_DEVICE}"
+    group_add:
+      - dialout        # /dev/ttyACM* and /dev/ttyUSB* belong to dialout

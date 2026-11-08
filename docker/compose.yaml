@@ -1,0 +1,22 @@
+# Usage (from the repo root):  docker/run.sh            -> shell in the container
+#                              docker/run.sh <command>  -> run one command
+services:
+  dev:
+    build:
+      context: .
+      args:
+        ROS_DISTRO: ${ROS_DISTRO:-jazzy}
+    image: tsp05-dev:${ROS_DISTRO:-jazzy}
+    volumes:
+      - ..:/tsp05
+    working_dir: /tsp05
+    # Run as the host user so files written to the mounted repo
+    # (colcon build/, install/, log/) are not owned by root on Linux.
+    user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+    environment:
+      HOME: /tmp
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+    ports:
+      - "8765:8765"   # foxglove_bridge websocket -> Foxglove app on the host
+    stdin_open: true
+    tty: true

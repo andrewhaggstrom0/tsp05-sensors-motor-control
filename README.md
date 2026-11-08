@@ -20,12 +20,57 @@ Control mode (GUI or SENSOR) is toggled by the debounced pushbutton or from the 
 
 ## Software
 - Firmware: `firmware/tsp05/`
-- ROS 2 bridge: `ros2_ws/src/tsp05_bridge/`
-- Foxglove layout: `foxglove/`
+- ROS 2 bridge: `ros2_ws/src/tsp05_bridge/` (serial <-> `/tsp05/*` topics, launch file, tests)
+- Foxglove layout: `foxglove/tsp05_layout.json`; command panel: `foxglove/tsp05-control-panel/`
+- Fake Arduino (no hardware needed): `tools/fake_arduino.py`
+- ROS 2 dev container: `docker/`
 - [Serial protocol](docs/protocol.md)
 
+![Track 5 architecture](docs/figures/bridge_architecture.png)
+
 ## Running
-<!-- Build/flash, ROS launch, Foxglove connect steps -->
+<!-- Build/flash steps: Track 2 -->
+
+### ROS 2 bridge + Foxglove
+The laptop side runs either in Docker (any OS) or natively on Ubuntu with ROS 2
+Humble or Jazzy. Both use the same code.
+
+**Docker** (macOS, Windows, or Linux; needs Docker Desktop / Docker Engine):
+
+    docker/run.sh ros2 launch tsp05_bridge tsp05.launch.py fake:=true   # no hardware
+    docker/test.sh                                                     # build + all tests
+    ROS_DISTRO=humble docker/run.sh                                    # Humble image instead of Jazzy
+
+With the real Uno on a Linux host, pass the device in:
+
+    TSP05_SERIAL_DEVICE=/dev/ttyACM0 docker/run.sh ros2 launch tsp05_bridge tsp05.launch.py port:=/dev/ttyACM0
+
+Docker Desktop on macOS cannot pass USB devices to a container. Share the port
+over TCP on the Mac instead (`brew install socat`; the device name varies), then
+point the bridge at it:
+
+    socat TCP-LISTEN:7000,reuseaddr FILE:/dev/cu.usbmodem1101,b115200,raw,echo=0
+    docker/run.sh ros2 launch tsp05_bridge tsp05.launch.py port:=socket://host.docker.internal:7000
+
+**Native Ubuntu** (ROS 2 sourced):
+
+    sudo apt install ros-$ROS_DISTRO-foxglove-bridge python3-serial
+    sudo usermod -aG dialout $USER        # serial port access; log out and back in
+    cd ros2_ws && colcon build && source install/setup.bash
+    ros2 launch tsp05_bridge tsp05.launch.py port:=/dev/ttyACM0     # or fake:=true
+    colcon test && colcon test-result --verbose
+
+**Foxglove**
+1. Foxglove desktop app: Open connection -> Foxglove WebSocket -> `ws://localhost:8765`.
+2. Layout -> Import from file -> `foxglove/tsp05_layout.json` (plots and indicators).
+3. Command panel, once per machine (Node 18+):
+   `cd foxglove/tsp05-control-panel && npm ci && npm run local-install`,
+   restart Foxglove, then Add panel -> "TSP05 Controls".
+
+Launch arguments: `port`, `baud` (115200), `fake`, `fake_link` (`/tmp/tsp05`),
+`foxglove`, `foxglove_port` (8765). Topics are listed in
+`ros2_ws/src/tsp05_bridge/tsp05_bridge/topics.py`; they follow the team guide
+with `fsr/*` renamed to `flex/*`.
 
 ## Calibration Results
 <!-- Transfer function plot, filtering plot, error table per sensor -->
@@ -35,7 +80,53 @@ Control mode (GUI or SENSOR) is toggled by the debounced pushbutton or from the 
 ### <Name 2>
 ### <Name 3>
 ### <Name 4>
-### <Name 5>
+### Raoul Bouri (Track 5: ROS 2 bridge, Foxglove GUI, fake Arduino)
+- **Fake Arduino** (`tools/fake_arduino.py`): a pty that speaks `docs/protocol.md`,
+  sending the 19-field `T` line at 20 Hz and obeying every command. It simulates the
+  sensors (raw ADC through Track 4's `analog_model.py`), servo slew, a DC motor with a
+  position loop (+-2 deg arrival band), a 0.225 deg/step stepper, the SENSOR-mode
+  mapping, and the 30 C / 28 C interlock. Bridge and GUI were built and tested before
+  any firmware existed.
+- **`tsp05_bridge` node**: 26 published topics, 6 command topics, port/baud as
+  parameters (device path or `socket://`). A background reader thread
+  auto-reconnects after a cable pull; malformed lines are counted and skipped.
+  Measured: 19.99 Hz on every topic; command -> telemetry round trip median 31 ms,
+  p95 52 ms (n = 200), mostly waiting for the next 50 ms telemetry line.
+- **Foxglove**: layout with the graded raw-vs-filtered plots (TOF, flex), DC RPM
+  measured vs commanded, stepper actual vs target, and mode/interlock/connection
+  indicators. A custom extension panel ("TSP05 Controls") sends every command by
+  clicking; STOP also works in SENSOR mode (sends `M,0` then `D,X`).
+- **Docker dev environment** (`docker/`): `ros:jazzy` (or Humble) image so the
+  laptop side runs the same on macOS and Linux.
+- **Tests**: 48 pytest tests (`docker/test.sh`) plus 8 for the panel logic (`npm test`).
+  They cover the parser against `protocol.md` itself, 5000 fuzzed lines, the live bridge
+  against the fake Arduino (rates, every command, reconnect, 30 % corrupted lines), and
+  checks that every topic in the layout and the panel exists in the bridge.
+- Figure: [docs/figures/bridge_architecture.png](docs/figures/bridge_architecture.png)
+  (`python3 tools/draw_bridge_diagram.py`).
 
 ## Challenges
 <!-- Per person: problem, analysis of cause, resolution -->
+
+### Raoul Bouri
+- **The fake Arduino stalled when nothing read the port.** A `D,P,90` measured after
+  a pause reported 86.2 deg with the motor still turning. Cause: a macOS pty holds only
+  a few KB (2-3 s of telemetry). With no reader, `os.write()` blocked and froze the
+  simulation. A real Uno never waits for the host; its TX simply drops bytes. Fix:
+  non-blocking writes that drop a line when the buffer is full. After: `D,P,90` lands
+  at 91.0 deg, and the simulation keeps running with no reader.
+- **The GUI could publish on any topic.** I set foxglove_bridge's
+  `client_topic_whitelist` to `/tsp05/cmd/.*`, but foxglove_bridge 3.6 (Jazzy) still
+  accepted a client advertising `/tsp05/servo/deg`; its own log showed it. I removed
+  the setting rather than ship something that looks like protection but isn't. The
+  remaining risk is small by design: the bridge acts only on `/tsp05/cmd/*`, so a
+  stray GUI publish can confuse a plot but cannot move a motor.
+- **Measuring latency honestly.** My first run reported a 11 ms median, which was
+  too good for 20 Hz telemetry. Each command went out a fixed 137 ms after the
+  previous reply, so it always landed at the same point in the 50 ms telemetry
+  period. Randomizing the timing gave 31 ms median / 52 ms p95. That matches the
+  expected average wait for the next line (25 ms) plus about 6 ms of processing.
+- **Not yet verified on hardware**: the real Uno (its reset when the port opens is
+  handled by skipping non-`T` lines), the Mac `socat` route across machines (tested
+  only inside one container), and the control panel inside the Foxglove app (tested
+  in a browser harness that mimics Foxglove's panel API).
