@@ -7,6 +7,13 @@
   <maintainer email="rahulbouri16@gmail.com">Raoul Bouri</maintainer>
   <license>MIT</license>
 
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>python3-serial</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>foxglove_bridge</exec_depend>
+
   <test_depend>python3-pytest</test_depend>
 
   <export>

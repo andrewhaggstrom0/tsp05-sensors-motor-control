@@ -1,0 +1,283 @@
+{
+  "configById": {
+    "Plot!tof": {
+      "title": "TOF distance (mm): raw vs filtered",
+      "paths": [
+        {
+          "value": "/tsp05/tof/raw_mm.data",
+          "enabled": true,
+          "timestampMethod": "receiveTime",
+          "label": "raw",
+          "color": "#9aa0a6"
+        },
+        {
+          "value": "/tsp05/tof/filt_mm.data",
+          "enabled": true,
+          "timestampMethod": "receiveTime",
+          "label": "filtered (median 5 + EMA)",
+          "color": "#1a73e8"
+        }
+      ],
+      "showXAxisLabels": true,
+      "showYAxisLabels": true,
+      "showLegend": true,
+      "legendDisplay": "floating",
+      "showPlotValuesInLegend": true,
+      "isSynced": true,
+      "xAxisVal": "timestamp",
+      "followingViewWidth": 20,
+      "sidebarDimension": 240
+    },
+    "Plot!flex": {
+      "title": "Flex bend (deg): raw vs filtered",
+      "paths": [
+        {
+          "value": "/tsp05/flex/deg.data",
+          "enabled": true,
+          "timestampMethod": "receiveTime",
+          "label": "raw",
+          "color": "#9aa0a6"
+        },
+        {
+          "value": "/tsp05/flex/deg_filt.data",
+          "enabled": true,
+          "timestampMethod": "receiveTime",
+          "label": "filtered (EMA)",
+          "color": "#1a73e8"
+        }
+      ],
+      "showXAxisLabels": true,
+      "showYAxisLabels": true,
+      "showLegend": true,
+      "legendDisplay": "floating",
+      "showPlotValuesInLegend": true,
+      "isSynced": true,
+      "xAxisVal": "timestamp",
+      "followingViewWidth": 20,
+      "sidebarDimension": 240
+    },
+    "Plot!dcrpm": {
+      "title": "DC velocity (RPM): measured vs commanded",
+      "paths": [
+        {
+          "value": "/tsp05/dc/rpm.data",
+          "enabled": true,
+          "timestampMethod": "receiveTime",
+          "label": "measured",
+          "color": "#e8710a"
+        },
+        {
+          "value": "/tsp05/cmd/dc_rpm.data",
+          "enabled": true,
+          "timestampMethod": "receiveTime",
+          "label": "commanded",
+          "color": "#188038"
+        }
+      ],
+      "showXAxisLabels": true,
+      "showYAxisLabels": true,
+      "showLegend": true,
+      "legendDisplay": "floating",
+      "showPlotValuesInLegend": true,
+      "isSynced": true,
+      "xAxisVal": "timestamp",
+      "followingViewWidth": 20,
+      "sidebarDimension": 240
+    },
+    "Plot!dcdeg": {
+      "title": "DC position (deg) and PWM",
+      "paths": [
+        {
+          "value": "/tsp05/dc/deg.data",
+          "enabled": true,
+          "timestampMethod": "receiveTime",
+          "label": "position (deg)",
+          "color": "#e8710a"
+        },
+        {
+          "value": "/tsp05/dc/pwm.data",
+          "enabled": true,
+          "timestampMethod": "receiveTime",
+          "label": "PWM (-255..255)",
+          "color": "#9aa0a6"
+        }
+      ],
+      "showXAxisLabels": true,
+      "showYAxisLabels": true,
+      "showLegend": true,
+      "legendDisplay": "floating",
+      "showPlotValuesInLegend": true,
+      "isSynced": true,
+      "xAxisVal": "timestamp",
+      "followingViewWidth": 20,
+      "sidebarDimension": 240
+    },
+    "Plot!stepper": {
+      "title": "Stepper (deg): actual vs target",
+      "paths": [
+        {
+          "value": "/tsp05/stepper/deg.data",
+          "enabled": true,
+          "timestampMethod": "receiveTime",
+          "label": "actual",
+          "color": "#e8710a"
+        },
+        {
+          "value": "/tsp05/stepper/target_deg.data",
+          "enabled": true,
+          "timestampMethod": "receiveTime",
+          "label": "target",
+          "color": "#188038"
+        }
+      ],
+      "showXAxisLabels": true,
+      "showYAxisLabels": true,
+      "showLegend": true,
+      "legendDisplay": "floating",
+      "showPlotValuesInLegend": true,
+      "isSynced": true,
+      "xAxisVal": "timestamp",
+      "followingViewWidth": 20,
+      "sidebarDimension": 240
+    },
+    "Plot!servo": {
+      "title": "Servo (deg) and thermistor (degC)",
+      "paths": [
+        {
+          "value": "/tsp05/servo/deg.data",
+          "enabled": true,
+          "timestampMethod": "receiveTime",
+          "label": "servo angle",
+          "color": "#e8710a"
+        },
+        {
+          "value": "/tsp05/thermistor/temp_c.data",
+          "enabled": true,
+          "timestampMethod": "receiveTime",
+          "label": "temperature",
+          "color": "#d93025"
+        }
+      ],
+      "showXAxisLabels": true,
+      "showYAxisLabels": true,
+      "showLegend": true,
+      "legendDisplay": "floating",
+      "showPlotValuesInLegend": true,
+      "isSynced": true,
+      "xAxisVal": "timestamp",
+      "followingViewWidth": 20,
+      "sidebarDimension": 240
+    },
+    "Indicator!mode": {
+      "path": "/tsp05/mode.data",
+      "style": "background",
+      "fallbackColor": "#1a73e8",
+      "fallbackLabel": "GUI mode",
+      "rules": [
+        {
+          "operator": "=",
+          "rawValue": "1",
+          "color": "#9334e6",
+          "label": "SENSOR mode"
+        }
+      ]
+    },
+    "Indicator!interlock": {
+      "path": "/tsp05/interlock.data",
+      "style": "background",
+      "fallbackColor": "#188038",
+      "fallbackLabel": "Interlock OK",
+      "rules": [
+        {
+          "operator": "=",
+          "rawValue": "true",
+          "color": "#d93025",
+          "label": "INTERLOCK: DC stopped"
+        }
+      ]
+    },
+    "Indicator!connected": {
+      "path": "/tsp05/bridge/connected.data",
+      "style": "bulb",
+      "fallbackColor": "#d93025",
+      "fallbackLabel": "Uno disconnected",
+      "rules": [
+        {
+          "operator": "=",
+          "rawValue": "true",
+          "color": "#188038",
+          "label": "Uno connected"
+        }
+      ]
+    },
+    "Gauge!temp": {
+      "path": "/tsp05/thermistor/temp_c.data",
+      "minValue": 15,
+      "maxValue": 40,
+      "colorMode": "colormap",
+      "colorMap": "red-yellow-green",
+      "reverse": true
+    },
+    "RosOut!log": {
+      "searchTerms": [],
+      "minLogLevel": 1,
+      "nameFilter": {}
+    }
+  },
+  "globalVariables": {},
+  "userNodes": {},
+  "playbackConfig": {
+    "speed": 1
+  },
+  "layout": {
+    "first": {
+      "first": {
+        "first": {
+          "first": "Plot!tof",
+          "second": "Plot!flex",
+          "direction": "column",
+          "splitPercentage": 50
+        },
+        "second": "Plot!servo",
+        "direction": "column",
+        "splitPercentage": 66.7
+      },
+      "second": {
+        "first": {
+          "first": "Plot!dcrpm",
+          "second": "Plot!dcdeg",
+          "direction": "column",
+          "splitPercentage": 50
+        },
+        "second": "Plot!stepper",
+        "direction": "column",
+        "splitPercentage": 66.7
+      },
+      "direction": "row",
+      "splitPercentage": 50
+    },
+    "second": {
+      "first": {
+        "first": {
+          "first": "Indicator!connected",
+          "second": "Indicator!mode",
+          "direction": "column",
+          "splitPercentage": 33
+        },
+        "second": {
+          "first": "Indicator!interlock",
+          "second": "Gauge!temp",
+          "direction": "column",
+          "splitPercentage": 33
+        },
+        "direction": "column",
+        "splitPercentage": 40
+      },
+      "second": "RosOut!log",
+      "direction": "column",
+      "splitPercentage": 55
+    },
+    "direction": "row",
+    "splitPercentage": 75
+  }
+}
