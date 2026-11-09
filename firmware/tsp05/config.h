@@ -86,7 +86,7 @@
 #define BUTTON_DEBOUNCE_MS    30
 
 // ---------- Scheduler (Track 2) ----------
-#define TELEMETRY_PERIOD_MS   1000    // 20 Hz
+#define TELEMETRY_PERIOD_MS   50      // 20 Hz
 #define MAPPING_PERIOD_MS     20       // SENSOR-mode mappings, 50 Hz
 
 // ---------- SENSOR-mode mappings (Track 2; agree with team before changing) ----------
