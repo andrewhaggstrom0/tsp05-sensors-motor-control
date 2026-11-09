@@ -105,10 +105,10 @@
 // Placeholders until measured: DC_COUNTS_PER_REV (M1), DC_MAX_RPM (PWM 255, no load).
 #define DC_PERIOD_MS          10
 #define DC_COUNTS_PER_REV     180.0f
-#define DC_DEADBAND_START_PWM 110      // breakaway ramp starts here (measured breakaway: fwd 115-140, rev 90-100)
+#define DC_DEADBAND_START_PWM 110      // breakaway ramp starts here (measured breakaway: fwd 115-140, rev 110-120)
 #define DC_BREAKAWAY_MAX_PWM  200      // ramp ceiling while stuck
 #define DC_BREAKAWAY_RAMP     300.0f   // PWM per second added while commanded but not moving
-#define DC_DEADBAND_RUN_PWM   57       // keeps turning down to this (measured: 56-57)
+#define DC_DEADBAND_RUN_PWM   60       // just above where a turning motor stops (measured: 56-59)
 #define DC_MOVING_RPM         2.0f     // below this the motor counts as stopped
 #define DC_MAX_RPM            130.0f
 #define DC_RPM_EMA_ALPHA      0.2f
