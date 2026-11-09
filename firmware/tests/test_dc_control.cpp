@@ -13,11 +13,12 @@ static int g_fail = 0, g_pass = 0;
 #define CHECK(cond, ...) do { if (cond) { g_pass++; } else { g_fail++; \
   printf("FAIL %s:%d  ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
 
-// First-order motor with stick-slip friction. Deliberately differs from the
-// controller's placeholders (deadband, top speed) to test robustness.
+// First-order motor with stick-slip friction, matched to the M0 measurements:
+// breakaway 115-140 forward / 90-115 reverse depending on shaft angle, keeps
+// turning down to 56. Top speed deliberately differs from DC_MAX_RPM.
 struct Motor {
   double rpm = 0, deg = 0;
-  int    startDb = 75, stopDb = 55;
+  int    stopDb = 56;
   double maxRpm = 115, tau = 0.08;
   double loadRpm = 0;
 
@@ -25,6 +26,7 @@ struct Motor {
     int a = std::abs(pwm);
     bool moving = std::fabs(rpm) > 1.0;
     double target = 0;
+    int startDb = (pwm > 0 ? 115 : 90) + (int)(12.5 * (1.0 + std::sin(deg * 0.07)));
     if (a > (moving ? stopDb : startDb))
       target = (pwm > 0 ? 1 : -1) * (a - stopDb) / (255.0 - stopDb) * maxRpm;
     target -= loadRpm;

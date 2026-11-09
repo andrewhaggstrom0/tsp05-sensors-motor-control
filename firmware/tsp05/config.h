@@ -102,10 +102,14 @@
 // ---------- Thermal interlock (Track 2) ----------
 #define INTERLOCK_TEMP_C      30.0f    // above this (or thermistor fault) -> DC stops
 // ---------- DC motor: control (Track 1) ----------
-// Placeholders until measured: DC_COUNTS_PER_REV (M1), DC_DEADBAND_PWM (M0), DC_MAX_RPM (PWM 255, no load).
+// Placeholders until measured: DC_COUNTS_PER_REV (M1), DC_MAX_RPM (PWM 255, no load).
 #define DC_PERIOD_MS          10
 #define DC_COUNTS_PER_REV     180.0f
-#define DC_DEADBAND_PWM       60
+#define DC_DEADBAND_START_PWM 110      // breakaway ramp starts here (measured breakaway: fwd 115-140, rev 90-100)
+#define DC_BREAKAWAY_MAX_PWM  200      // ramp ceiling while stuck
+#define DC_BREAKAWAY_RAMP     300.0f   // PWM per second added while commanded but not moving
+#define DC_DEADBAND_RUN_PWM   57       // keeps turning down to this (measured: 56-57)
+#define DC_MOVING_RPM         2.0f     // below this the motor counts as stopped
 #define DC_MAX_RPM            130.0f
 #define DC_RPM_EMA_ALPHA      0.2f
 
@@ -114,8 +118,8 @@
 #define DC_VEL_I_LIMIT        80.0f    // max PWM from the integral term
 
 #define DC_POS_KP             2.5f     // PWM per degree of error
-#define DC_POS_KI             20.0f    // breaks stiction when stuck short of the target
-#define DC_POS_KD             0.08f
+#define DC_POS_KI             0.0f     // not needed: the breakaway deadband handles stiction
+#define DC_POS_KD             0.2f
 #define DC_POS_I_LIMIT        40.0f
 #define DC_POS_MAX_PWM        200
 #define DC_POS_TOL_DEG        2.0f     // within this, stop driving

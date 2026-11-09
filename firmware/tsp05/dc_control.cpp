@@ -51,6 +51,7 @@ void ctrlInit(Ctrl &c, long counts) {
   c.targetRpm = 0.0f;
   c.rpm = 0.0f;
   c.arrived = true;
+  c.breakaway = DC_DEADBAND_START_PWM;
   c.vel = {DC_VEL_KP, DC_VEL_KI, 0.0f, DC_VEL_I_LIMIT, 0.0f, 0.0f, false};
   c.pos = {DC_POS_KP, DC_POS_KI, DC_POS_KD, DC_POS_I_LIMIT, 0.0f, 0.0f, false};
 }
@@ -73,6 +74,24 @@ void ctrlStop(Ctrl &c) {
   c.targetRpm = 0.0f;
 }
 
+static int coast(Ctrl &c) {
+  c.breakaway = DC_DEADBAND_START_PWM;
+  return 0;
+}
+
+// Stiction varies with shaft angle, so while commanded but stopped the breakaway
+// deadband ramps up until the motor starts, then resets.
+static int applyDeadband(Ctrl &c, float u, float dtS) {
+  if (absf(c.rpm) > DC_MOVING_RPM) {
+    c.breakaway = DC_DEADBAND_START_PWM;
+    return deadbandComp(u, DC_DEADBAND_RUN_PWM);
+  }
+  int pwm = deadbandComp(u, (int)c.breakaway);
+  if (pwm != 0)
+    c.breakaway = clampf(c.breakaway + DC_BREAKAWAY_RAMP * dtS, DC_DEADBAND_START_PWM, DC_BREAKAWAY_MAX_PWM);
+  return pwm;
+}
+
 int ctrlStep(Ctrl &c, long counts, float dtS) {
   float raw = rpmFromCounts(counts - c.lastCounts, dtS);
   c.lastCounts = counts;
@@ -81,10 +100,10 @@ int ctrlStep(Ctrl &c, long counts, float dtS) {
   float u = 0.0f;
   switch (c.mode) {
     case IDLE:
-      return 0;
+      return coast(c);
 
     case VELOCITY:
-      if (c.targetRpm == 0.0f) { pidReset(c.vel); return 0; }
+      if (c.targetRpm == 0.0f) { pidReset(c.vel); return coast(c); }
       u = c.targetRpm * 255.0f / DC_MAX_RPM + pidStep(c.vel, c.targetRpm - c.rpm, dtS);
       break;
 
@@ -93,14 +112,14 @@ int ctrlStep(Ctrl &c, long counts, float dtS) {
       if (absf(errDeg) <= DC_POS_TOL_DEG) {
         pidReset(c.pos);
         c.arrived = true;
-        return 0;
+        return coast(c);
       }
       c.arrived = false;
       u = clampf(pidStep(c.pos, errDeg, dtS), -DC_POS_MAX_PWM, DC_POS_MAX_PWM);
       break;
     }
   }
-  return deadbandComp(u, DC_DEADBAND_PWM);
+  return applyDeadband(c, u, dtS);
 }
 
 }

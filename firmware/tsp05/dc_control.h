@@ -19,6 +19,7 @@ struct Ctrl {
   float targetRpm;
   float rpm;
   bool  arrived;
+  float breakaway;
   Pid   vel, pos;
 };
 
@@ -27,7 +28,8 @@ long  countsFromDeg(float deg);
 float rpmFromCounts(long dCounts, float dtS);
 
 // Maps a command in -255..255 onto the range the motor actually moves in: 0 stays 0,
-// anything else becomes +/-(deadband..255).
+// anything else becomes +/-(deadband..255). ctrlStep uses the running deadband once
+// moving; while stopped it ramps the breakaway deadband up until the motor starts.
 int   deadbandComp(float u, int deadband);
 
 void  pidReset(Pid &p);
