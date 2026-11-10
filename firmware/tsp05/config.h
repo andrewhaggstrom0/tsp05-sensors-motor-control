@@ -116,9 +116,9 @@
 #define DC_VEL_KI             4.0f
 #define DC_VEL_I_LIMIT        80.0f    // max PWM from the integral term
 
-#define DC_POS_KP             2.5f     // PWM per degree of error
+#define DC_POS_KP             1.5f     // PWM per degree of error
 #define DC_POS_KI             0.0f     // not needed: the breakaway deadband handles stiction
-#define DC_POS_KD             0.2f
+#define DC_POS_KD             0.0f     // gearbox friction already damps the approach; any Kd only chatters
 #define DC_POS_I_LIMIT        40.0f
 #define DC_POS_MAX_PWM        200
 #define DC_POS_TOL_DEG        2.0f     // within this, stop driving

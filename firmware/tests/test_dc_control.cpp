@@ -13,26 +13,38 @@ static int g_fail = 0, g_pass = 0;
 #define CHECK(cond, ...) do { if (cond) { g_pass++; } else { g_fail++; \
   printf("FAIL %s:%d  ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
 
-// First-order motor with stick-slip friction, matched to the M0 measurements:
-// breakaway 115-140 forward / 110-125 reverse depending on shaft angle, keeps
-// turning down to 58. Top speed deliberately differs from DC_MAX_RPM.
+// First-order motor matched to the bench measurements: steady speed from
+// calibration/data/dc_speed_map.csv scaled by `gain` (0.92 = a weaker motor than
+// the controller's table, to exercise the PI correction), breakaway 115-140
+// forward / 110-125 reverse depending on shaft angle, keeps turning down to 58.
+// tau (driven) and tauCoast (unpowered) were fitted to the hardware p90/p30/p10
+// steps in calibration/data: ~1.2 deg RMS, under one encoder count.
+static const double M_PWM[]     = {58, 63, 68, 75, 85, 95, 110, 130, 155, 180, 205, 230, 255};
+static const double M_CPS_FWD[] = {0, 71.7, 94.0, 123.0, 161.0, 194.2, 237.5, 280.0, 312.5, 341.0, 360.0, 379.0, 422.0};
+static const double M_CPS_REV[] = {0, 55.8, 73.0, 99.0, 136.0, 167.5, 211.7, 256.7, 304.2, 339.2, 361.7, 385.0, 445.8};
+
 struct Motor {
   double rpm = 0, deg = 0;
   int    stopDb = 58;
-  double maxRpm = 115, tau = 0.08;
+  double gain = 0.92, tau = 0.03, tauCoast = 0.02;
   double loadRpm = 0;
+
+  static double steadyRpm(int pwm) {
+    const double *cps = pwm > 0 ? M_CPS_FWD : M_CPS_REV;
+    double a = std::abs(pwm), c = cps[12];
+    for (int i = 1; i < 13; i++)
+      if (a <= M_PWM[i]) { c = cps[i - 1] + (cps[i] - cps[i - 1]) * (a - M_PWM[i - 1]) / (M_PWM[i] - M_PWM[i - 1]); break; }
+    return (pwm > 0 ? 1 : -1) * c * 60.0 / DC_COUNTS_PER_REV;
+  }
 
   void step(int pwm, double dt) {
     int a = std::abs(pwm);
     bool moving = std::fabs(rpm) > 1.0;
-    double target = 0;
     double swing = 1.0 + std::sin(deg * 0.07);
     int startDb = pwm > 0 ? 115 + (int)(12.5 * swing) : 110 + (int)(7.5 * swing);
-    if (a > (moving ? stopDb : startDb))
-      target = (pwm > 0 ? 1 : -1) * (a - stopDb) / (255.0 - stopDb) * maxRpm;
-    target -= loadRpm;
-    if (!moving && a <= startDb) target = 0;
-    rpm += (target - rpm) * dt / tau;
+    double target = 0;
+    if (a > (moving ? stopDb : startDb)) target = gain * steadyRpm(pwm) - (pwm > 0 ? loadRpm : -loadRpm);
+    rpm += (target - rpm) * dt / (target == 0 ? tauCoast : tau);
     deg += rpm * 6.0 * dt;
   }
   long counts() const { return (long)std::floor(deg * DC_COUNTS_PER_REV / 360.0); }
@@ -85,6 +97,17 @@ static void test_math() {
     prev = p;
   }
   CHECK(mono, "deadbandComp must be monotonic and odd-symmetric");
+
+  CHECK(feedforwardPwm(0.0f) == 0.0f, "zero speed needs zero feedforward");
+  CHECK(std::fabs(feedforwardPwm(194.2f * 60.0f / DC_COUNTS_PER_REV) - 95.0f) < 0.1f, "table point fwd 194.2 cps -> 95");
+  CHECK(std::fabs(feedforwardPwm(-167.5f * 60.0f / DC_COUNTS_PER_REV) + 95.0f) < 0.1f, "table point rev 167.5 cps -> -95");
+  CHECK(feedforwardPwm(500.0f) == 255.0f, "beyond the table saturates at 255");
+  bool ffMono = true;
+  for (float r = 1.0f; r < 150.0f; r += 1.0f) {
+    if (feedforwardPwm(r + 1.0f) < feedforwardPwm(r)) ffMono = false;
+    if (feedforwardPwm(-r - 1.0f) > feedforwardPwm(-r)) ffMono = false;
+  }
+  CHECK(ffMono, "feedforward must rise with speed in both directions");
 }
 
 static void test_pid() {
