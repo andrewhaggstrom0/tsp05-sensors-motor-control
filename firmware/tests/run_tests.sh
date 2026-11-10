@@ -19,3 +19,9 @@ g++ -std=c++17 -Wall -Wextra -Werror -O1 \
     test_dc_control.cpp ../tsp05/dc_control.cpp \
     -o build/test_dc_control
 ./build/test_dc_control
+
+g++ -std=c++17 -Wall -Wextra -Werror -O1 \
+    -I shim -I ../tsp05 \
+    test_tof_gesture.cpp ../tsp05/tof_gesture.cpp \
+    -o build/test_tof_gesture
+./build/test_tof_gesture
