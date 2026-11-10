@@ -14,3 +14,8 @@ g++ -std=c++17 -Wall -Wextra -Werror -O1 \
     test_sensors_digital.cpp ../tsp05/sensors_digital.cpp \
     -o build/test_sensors_digital
 ./build/test_sensors_digital
+g++ -std=c++17 -Wall -Wextra -Werror -O1 \
+    -I shim -I ../tsp05 \
+    test_dc_control.cpp ../tsp05/dc_control.cpp \
+    -o build/test_dc_control
+./build/test_dc_control

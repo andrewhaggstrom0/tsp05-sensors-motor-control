@@ -1,0 +1,7 @@
+direction,trial,supply_V,pwm_start,pwm_stop
+forward,1,12.0,130,57
+forward,2,12.0,140,58
+forward,3,12.0,115,59
+reverse,1,12.0,115,56
+reverse,2,12.0,110,59
+reverse,3,12.0,120,
