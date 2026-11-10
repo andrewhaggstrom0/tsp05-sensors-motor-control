@@ -37,10 +37,10 @@
 #define TOF_MEDIAN_N          5        // median window: removes single-sample outliers (odd, <= 9)
 #define TOF_EMA_ALPHA         0.3f     // 0..1 after the median; higher = less smoothing, less lag
 #define TOF_STALE_MS          500      // no valid range for this long -> tofFault()
-#define SLOT_TABS             4        // tabs on the cardboard disc (events per revolution)
+#define SLOT_TABS             1        // tabs on the cardboard disc (events per revolution)
 #define SLOT_GLITCH_US        1000UL   // edges closer than this are bounce, not a new tab
 #define SLOT_RPM_PERIOD_MS    100      // RPM recomputed at 10 Hz
-#define SLOT_TIMEOUT_MS       2000     // no event for this long -> 0 RPM
+#define SLOT_TIMEOUT_MS       5000     // no event for this long -> 0 RPM (1 tab: lowest reading 12 RPM)
 
 // ---------- Serial ----------
 #define SERIAL_BAUD      115200

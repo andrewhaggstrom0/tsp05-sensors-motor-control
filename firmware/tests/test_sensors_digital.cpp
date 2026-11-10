@@ -144,14 +144,17 @@ static void test_slot_uneven_tabs() {
   // Hand-cut tabs: alternate short/long gaps, 1 rev still takes 1 s (60 rpm).
   // Sampled every 10 ms between edges, the RPM must stay at 60 the whole time.
   runMs(SLOT_TIMEOUT_MS + SLOT_RPM_PERIOD_MS);
-  static_assert(SLOT_TABS % 2 == 0, "this test alternates gaps, needs an even tab count");
-  const uint32_t shortGap = 2 * 1000 / SLOT_TABS * 2 / 5;     // 40 % of an even pair
-  const uint32_t longGap  = 2 * 1000 / SLOT_TABS - shortGap;  // pair sums to 2 even gaps
+  // Uneven tabs need at least 2; with an odd count the last gap pairs up unevenly,
+  // so alternate only for even counts and use even gaps otherwise.
+  const bool alternate = (SLOT_TABS % 2 == 0);
+  const uint32_t evenGap = 1000 / SLOT_TABS;                    // 1 rev per s = 60 rpm
+  const uint32_t sGap    = alternate ? 2 * evenGap * 2 / 5 : evenGap;  // 40 % of a pair
+  const uint32_t lGap    = alternate ? 2 * evenGap - sGap : evenGap;   // pair = 2 even gaps
   float lo = 1e9f, hi = 0.0f;
   for (int rev = 0; rev < 5; rev++) {
     for (int t = 0; t < SLOT_TABS; t++) {
       slotEdge();
-      uint32_t g = (t % 2) ? longGap : shortGap;
+      uint32_t g = (t % 2) ? lGap : sGap;
       for (uint32_t ms = 0; ms < g; ms += 10) {
         runMs(10);
         if (rev >= 2) { lo = std::fmin(lo, slotRpm()); hi = std::fmax(hi, slotRpm()); }
