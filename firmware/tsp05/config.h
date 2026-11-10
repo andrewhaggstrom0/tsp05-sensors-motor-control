@@ -134,7 +134,7 @@
 #define GESTURE_CENTER_B       231      // optical centre of zone B
 #define GESTURE_FLIP           0        // 1 if swipes come out mirrored for how the sensor is mounted
 #define GESTURE_NEAR_MM        700      // a zone reading closer than this = hand present (swipe at 30-50 cm)
-#define GESTURE_MIN_GAP_MS     60       // > TOF_PERIOD_MS: a one-step gap is just which zone was sampled first
+#define GESTURE_MIN_LEAD_MS    80       // entry lead + exit lead; one 40 ms step each is the minimum
 #define GESTURE_MAX_MS         1500     // passes longer than this (hand held still) are ignored
 #define GESTURE_CLEAR_MS       120      // both zones clear this long ends a pass (> one A+B cycle)
 #define GESTURE_SERVO_DEG_S    45.0f    // servo sweep speed after a swipe

@@ -12,6 +12,7 @@ enum Swipe : int8_t { NONE = 0, LEFT_TO_RIGHT = 1, RIGHT_TO_LEFT = -1 };
 struct Detector {
   bool     on[2];       // hand currently seen in each zone
   uint32_t firstMs[2];  // when each zone first saw the hand in this pass (0 = not yet)
+  uint32_t lastMs[2];   // when each zone last saw the hand in this pass
   uint32_t startMs;     // when the pass began
   uint32_t lastNearMs;  // last reading that saw the hand
   bool     active;      // a pass is in progress

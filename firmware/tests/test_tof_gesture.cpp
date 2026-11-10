@@ -1,6 +1,9 @@
 // Host-side tests for firmware/tsp05/tof_gesture.cpp.
 // Run: firmware/tests/run_tests.sh
 #include <cstdio>
+#include <fstream>
+#include <sstream>
+#include <string>
 #include <vector>
 #include "config.h"
 #include "tof_gesture.h"
@@ -84,11 +87,31 @@ static void test_two_swipes_and_invalid() {
   CHECK(s == NONE && !d.active, "invalid readings (bad range status) must count as no hand");
 }
 
+// Replays the bench recording (8x10 zones, swipes at 30-50 cm): 6 left-to-right,
+// 5 right-to-left, then 5 more whose direction is clear from both entry and exit.
+static void test_bench_recording() {
+  std::ifstream f("../../calibration/data/tof_swipe_8x10.csv");
+  CHECK(f.good(), "bench recording not found");
+  std::string line; std::getline(f, line);
+  Detector d; reset(d);
+  std::vector<Swipe> got;
+  while (std::getline(f, line)) {
+    std::stringstream ss(line); std::string ms, zone, mm, st;
+    std::getline(ss, ms, ','); std::getline(ss, zone, ','); std::getline(ss, mm, ','); std::getline(ss, st, ',');
+    Swipe s = update(d, (Zone)std::stoi(zone), (uint16_t)std::stoi(mm), std::stoi(st) == 0, (uint32_t)std::stoul(ms));
+    if (s != NONE) got.push_back(s);
+  }
+  const Swipe L = LEFT_TO_RIGHT, R = RIGHT_TO_LEFT;
+  std::vector<Swipe> want = {L, L, L, L, L, L, R, R, R, R, R, L, L, L, R, L};
+  CHECK(got == want, "bench recording: got %zu swipes, want 16 in the recorded order", got.size());
+}
+
 int main() {
   test_swipes();
   test_fast_swipe_with_gap();
   test_not_swipes();
   test_two_swipes_and_invalid();
+  test_bench_recording();
   printf("tof_gesture: %d passed, %d failed\n", g_pass, g_fail);
   return g_fail ? 1 : 0;
 }
