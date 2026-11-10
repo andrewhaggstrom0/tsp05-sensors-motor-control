@@ -83,6 +83,24 @@ def firmware_filter(raw: list[float]) -> list[float]:
     return out
 
 
+def clean_series(t: list[float], *cols: list[float]):
+    """Drop what came before the Uno's restart and before its first valid range.
+
+    Opening the port resets the Uno, so a line or two sent just before the reset
+    can arrive first, with the old clock: keep only what follows the last point
+    where time goes backwards. Then drop leading 0 mm samples (no valid range yet).
+    """
+    start = 0
+    for i in range(1, len(t)):
+        if t[i] < t[i - 1]:
+            start = i
+    raw = cols[0]
+    while start < len(t) - 1 and raw[start] == 0:
+        start += 1
+    t0 = t[start]
+    return [x - t0 for x in t[start:]], *[c[start:] for c in cols]
+
+
 # ---------------------------------------------------------------------------
 # Sample sources. read(n) returns the next n samples arriving after the call,
 # as (ms, raw_mm, filt_mm or None).
@@ -257,14 +275,16 @@ def log_filter(src, path: Path, seconds: float) -> None:
               "holding each about 2 s...")
         rows = src.read(n)
     path.parent.mkdir(parents=True, exist_ok=True)
-    t0 = rows[0][0]
+    have_fw = rows[0][2] is not None
+    t, raw, filt = clean_series([r[0] / 1000 for r in rows], [r[1] for r in rows],
+                                [r[2] for r in rows])
     with path.open("w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["t_s", "raw_mm", "filt_mm"])
-        for ms, raw, filt in rows:
-            w.writerow([f"{(ms - t0) / 1000:.3f}", f"{raw:g}", "" if filt is None else f"{filt:g}"])
-    kind = "firmware filtered value" if rows[0][2] is not None else "raw only (filter applied at report)"
-    print(f"saved {len(rows)} samples to {path.relative_to(REPO)} ({kind})")
+        for ts, r, fv in zip(t, raw, filt):
+            w.writerow([f"{ts:.3f}", f"{r:g}", "" if fv is None else f"{fv:g}"])
+    kind = "firmware filtered value" if have_fw else "raw only (filter applied at report)"
+    print(f"saved {len(t)} samples to {path.relative_to(REPO)} ({kind})")
 
 
 # ---------------------------------------------------------------------------
@@ -332,10 +352,12 @@ def report(data: Path, plots: Path, results: Path) -> None:
     filt_path = data / FILTER_CSV
     if filt_path.exists():
         rows = list(csv.DictReader(filt_path.open()))
-        t = np.array([float(r["t_s"]) for r in rows])
-        raw = np.array([float(r["raw_mm"]) for r in rows])
         have_fw = all(r["filt_mm"] for r in rows)
-        filt = np.array([float(r["filt_mm"]) for r in rows]) if have_fw else np.array(firmware_filter(list(raw)))
+        t_l, raw_l, filt_l = clean_series([float(r["t_s"]) for r in rows],
+                                          [float(r["raw_mm"]) for r in rows],
+                                          [float(r["filt_mm"]) if have_fw else 0.0 for r in rows])
+        t, raw = np.array(t_l), np.array(raw_l)
+        filt = np.array(filt_l) if have_fw else np.array(firmware_filter(raw_l))
         n_raw, n_filt = robust_noise(raw), robust_noise(filt)
         # Outliers: raw samples far from a centred median of 5 of their neighbours
         # (centred, so the steps where the target moved don't count)
