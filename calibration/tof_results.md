@@ -23,5 +23,13 @@ Over 50 to 500 mm: mean error -15.9 mm, RMS error 16.7 mm, max |error| 24.6 mm, 
 
 With a constant offset correction of +15.9 mm the RMS error would be 5.1 mm.
 
-_No tof_filter.csv yet._
+### Filter: raw vs filtered
+
+![TOF filter](plots/tof_filter.png)
+
+| Filter | Raw noise (mm) | Filtered noise (mm) | Noise reduction | Outliers in raw |
+|---|---|---|---|---|
+| median of 5 → EMA α = 0.3 | 2.10 | 0.31 | 85 % | 0 |
+
+Filtered values: firmware output. Noise = per-sample standard deviation from the sample-to-sample change, robust to the steps where the target moved. Lag cost: the median delays a step by about 2 samples (80 ms) and the EMA adds a time constant τ = −Δt / ln(1 − α) = 112 ms at Δt = 40 ms.
 
