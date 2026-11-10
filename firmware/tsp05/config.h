@@ -125,14 +125,15 @@
 
 // ---------- TOF swipe gesture (Track 1 prototype) ----------
 // The VL53L1X is single-zone, but its 16x16 SPAD array can be limited to a region
-// of interest. Alternating two 8x16 halves (centres from ST's two-zone people-counting
-// example) gives a left and a right distance; the order they see the hand is the swipe.
+// of interest. Alternating the left and right halves (centres from ST's two-zone
+// people-counting example) gives two distances; the order they see the hand is the swipe.
 #define GESTURE_ROI_W          8        // zone width in SPADs (min 4)
-#define GESTURE_ROI_H          16       // zone height in SPADs
+#define GESTURE_ROI_H          10       // zone height in SPADs; the SparkFun library ignores the
+                                        // centre (uses 199) if width or height is over 10
 #define GESTURE_CENTER_A       167      // optical centre of zone A
 #define GESTURE_CENTER_B       231      // optical centre of zone B
 #define GESTURE_FLIP           0        // 1 if swipes come out mirrored for how the sensor is mounted
-#define GESTURE_NEAR_MM        300      // a zone reading closer than this = hand present
+#define GESTURE_NEAR_MM        700      // a zone reading closer than this = hand present (swipe at 30-50 cm)
 #define GESTURE_MIN_GAP_MS     60       // > TOF_PERIOD_MS: a one-step gap is just which zone was sampled first
 #define GESTURE_MAX_MS         1500     // passes longer than this (hand held still) are ignored
 #define GESTURE_CLEAR_MS       120      // both zones clear this long ends a pass (> one A+B cycle)
