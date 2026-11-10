@@ -113,7 +113,15 @@ the median delays a step by about 80 ms, and the EMA adds a 112 ms time constant
 (visible at each step above).
 
 **Slot sensor**: 50 card passes at mixed speeds (about 15 slow, 20 normal, 15 fast)
-counted exactly +50. RPM against the stepper: pending.
+counted exactly +50.
+
+![Slot RPM vs stepper](calibration/plots/slot_rpm.png)
+
+**Slot RPM vs stepper** (disc with 1 tab on the stepper shaft, `P,3600` = 10 revolutions,
+`python tools/slot_rpm_check.py`): the reference is the stepper's own speed, the slope
+of `step_deg` over time in telemetry, 26.28 rpm. `slot_rpm` read 26.1-26.5 rpm per
+revolution (within +-0.25 rpm, +-1 %), mean 26.28 rpm; 10 events for 10 revolutions.
+After the stop it decays smoothly rather than holding the last value.
 
 ## Individual Contributions
 ### <Name 1>
@@ -130,21 +138,23 @@ counted exactly +50. RPM against the stepper: pending.
 - **Slot sensor (EE-SX1042, D3 / INT1)**: RISING-edge interrupt with a 1 ms glitch
   filter; edges are time-stamped into a ring buffer. `slotTakeEvents()` hands each event
   to the stepper jog exactly once.
-- **RPM**: period method over one full revolution (4 tabs). Counting events in a 100 ms
-  window would resolve only 150 RPM per count. Spanning a whole revolution also cancels
-  unevenly cut tabs. RPM decays smoothly when the disc slows and reads 0 after 2 s.
+- **RPM**: period method over one full revolution (`SLOT_TABS` tabs; the final disc has
+  1). Counting events in a 100 ms window would resolve only 150 RPM per count with 4
+  tabs (600 with 1). Spanning a whole revolution also cancels unevenly cut tabs. RPM
+  decays smoothly when the disc slows and reads 0 after `SLOT_TIMEOUT_MS` (5 s).
 - **Integration**: the full `tsp05.ino` with this module uses 52 % flash and 45 % RAM
   (team limit 75 %).
 - **Tools and tests**: bring-up sketch (`firmware/bringup/digital/`);
   `tools/tof_calibration.py` (error logging, raw-vs-filtered recording, error table and
-  plots, `--sim` rehearsal); host tests (`firmware/tests/test_sensors_digital.cpp`,
+  plots, `--sim` rehearsal); `tools/slot_rpm_check.py` (RPM against the stepper); host tests (`firmware/tests/test_sensors_digital.cpp`,
   37 checks) for the filter, faults, glitch filter, and RPM with uneven tabs.
 - **Measured on hardware** (details under Calibration Results): TOF error over
   50-500 mm is a constant -15.9 mm offset (RMS 16.7 mm, std <= 3.1 mm, fit slope
   0.993; 5.1 mm RMS after offset correction). Filter on firmware output: noise
   2.10 -> 0.31 mm (85 %). Slot sensor: 50 passes -> exactly +50. Found and fixed
   telemetry running at 1 Hz instead of 20 Hz (`TELEMETRY_PERIOD_MS` 1000 -> 50).
-- **Not yet verified on hardware**: RPM against the stepper at a known 30 RPM.
+- **RPM on hardware**: against the stepper over 10 revolutions, within +-1 % per
+  revolution (26.1-26.5 vs 26.28 rpm), 10/10 events (`tools/slot_rpm_check.py`).
 ### <Name 4>
 ### Raoul Bouri (Track 5: ROS 2 bridge, Foxglove GUI, fake Arduino)
 - **Fake Arduino** (`tools/fake_arduino.py`): a pty that speaks `docs/protocol.md`,
@@ -193,6 +203,12 @@ counted exactly +50. RPM against the stepper: pending.
   ~1.3 m short-mode range, the sensor reported 236-272 mm, flagged status 7
   (wrapped target). The module accepts only status 0, so these never reach the
   filter or the servo; `tofFiltMm()` holds the last valid value.
+- **The stepper was not a 30 rpm reference.** `STEPPER_STEP_US` = 1250 should give
+  30 rpm, but 10 revolutions took 22.9 s: 26.3 rpm, 12 % slow. The firmware sends at
+  most one step per `loop()` pass, so any pass longer than 1.25 ms (telemetry, I2C,
+  ADC reads) delays a step. Comparing `slot_rpm` with the nominal 30 rpm would have
+  shown a false 12 % error, so the reference is the measured `step_deg` slope instead.
+  Reported to Track 2.
 - **Stale samples broke the filter plot.** Opening the serial port resets the Uno.
   Two lines sent just before the reset arrived first, stamped with the old clock,
   so the plot's time axis ran from -482 s. `tof_calibration.py` now keeps only
