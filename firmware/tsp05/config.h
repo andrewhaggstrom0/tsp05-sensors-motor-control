@@ -102,9 +102,8 @@
 // ---------- Thermal interlock (Track 2) ----------
 #define INTERLOCK_TEMP_C      30.0f    // above this (or thermistor fault) -> DC stops
 // ---------- DC motor: control (Track 1) ----------
-// Placeholder until measured: DC_COUNTS_PER_REV (M1; first runs gave ~179, expected 3 x 2 x 30 = 180).
 #define DC_PERIOD_MS          10
-#define DC_COUNTS_PER_REV     180.0f
+#define DC_COUNTS_PER_REV     180.0f   // measured: 10 turns = 1799 counts (3 pulses x 2 edges x 30:1)
 #define DC_DEADBAND_START_PWM 110      // breakaway ramp starts here (measured breakaway: fwd 115-140, rev 110-120)
 #define DC_BREAKAWAY_MAX_PWM  200      // ramp ceiling while stuck
 #define DC_BREAKAWAY_RAMP     300.0f   // PWM per second added while commanded but not moving
