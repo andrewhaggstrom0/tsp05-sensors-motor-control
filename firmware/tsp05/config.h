@@ -102,7 +102,7 @@
 // ---------- Thermal interlock (Track 2) ----------
 #define INTERLOCK_TEMP_C      30.0f    // above this (or thermistor fault) -> DC stops
 // ---------- DC motor: control (Track 1) ----------
-// Placeholders until measured: DC_COUNTS_PER_REV (M1), DC_MAX_RPM (PWM 255, no load).
+// Placeholder until measured: DC_COUNTS_PER_REV (M1; first runs gave ~179, expected 3 x 2 x 30 = 180).
 #define DC_PERIOD_MS          10
 #define DC_COUNTS_PER_REV     180.0f
 #define DC_DEADBAND_START_PWM 110      // breakaway ramp starts here (measured breakaway: fwd 115-140, rev 110-120)
@@ -110,7 +110,7 @@
 #define DC_BREAKAWAY_RAMP     300.0f   // PWM per second added while commanded but not moving
 #define DC_DEADBAND_RUN_PWM   60       // just above where a turning motor stops (measured: 56-59)
 #define DC_MOVING_RPM         2.0f     // below this the motor counts as stopped
-#define DC_MAX_RPM            130.0f
+#define DC_MAX_RPM            140.0f   // measured: 420 counts/s at PWM 255, 12 V, no load
 #define DC_RPM_EMA_ALPHA      0.2f
 
 #define DC_VEL_KP             0.8f     // PWM per rpm of error
