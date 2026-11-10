@@ -22,16 +22,33 @@ ROOT = Path(__file__).resolve().parent.parent
 FIELDS = ["ms", "mode", "target", "deg", "rpm", "pwm"]
 
 
+def is_data(line: str, fields: int) -> bool:
+    """True for a sketch data line: the expected number of numeric fields."""
+    parts = line.split(",")
+    try:
+        return len(parts) == fields and all(float(p) is not None for p in parts)
+    except ValueError:
+        return False
+
+
 def open_port(port: str, baud: int):
     try:
         import serial
     except ImportError:
         sys.exit("pyserial is not installed: pip install -r tools/requirements.txt")
     ser = serial.Serial(port, baud, timeout=1)
+    ser.dtr = False
+    time.sleep(0.1)
+    ser.reset_input_buffer()
+    ser.dtr = True
     deadline = time.time() + 4
+    data_lines = 0
     while time.time() < deadline:
         line = ser.readline().decode(errors="replace").strip()
         if line.startswith("# tsp05 dc bringup"):
+            return ser
+        data_lines += is_data(line, 6)
+        if data_lines >= 3:
             return ser
     sys.exit(f"No dc bring-up banner from {port}. Is firmware/bringup/dc_pid flashed?")
 
