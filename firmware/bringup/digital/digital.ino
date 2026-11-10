@@ -72,7 +72,7 @@ void setup() {
     Serial.println(F("# TOF not found: check 3V3, SDA=A4, SCL=A5, GND"));
   } else {
     Serial.print(F("# TOF sensor id 0x"));
-    Serial.println(tof.getSensorID(), HEX);   // expect EEAC
+    Serial.println(tof.getSensorID(), HEX);   // expect EACC
     tof.setDistanceModeShort();               // ~1.3 m max, better in ambient light
     tof.setTimingBudgetInMs(TOF_BUDGET_MS);
     tof.setIntermeasurementPeriod(TOF_PERIOD_MS);
