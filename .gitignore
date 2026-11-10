@@ -30,3 +30,6 @@ calibration/sim_data/
 # Copies made by tools/sync_dc_bringup.sh (edit firmware/tsp05 instead)
 firmware/bringup/dc_pid/*.h
 firmware/bringup/dc_pid/*.cpp
+# Copies made by tools/sync_tof_swipe.sh (edit firmware/tsp05 instead)
+firmware/bringup/tof_swipe/*.h
+firmware/bringup/tof_swipe/*.cpp
