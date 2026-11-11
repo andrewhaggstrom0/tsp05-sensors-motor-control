@@ -15,15 +15,24 @@ import {
   CMD,
   Command,
   CommandError,
+  DC_MOVE_PRESETS,
+  DC_RPM_PRESETS,
   LIMITS,
   PanelState,
   SCHEMA,
+  SENSOR_MAP,
   STATE,
+  STATUS_TOPIC,
+  Tone,
   applyMessages,
   commands,
   datatypesFor,
+  dcView,
   isLive,
+  linkView,
   parseInput,
+  servoSliderValue,
+  statusTone,
   stopSequence,
 } from "./commands";
 
@@ -56,6 +65,7 @@ const THEMES: Record<"light" | "dark", Theme> = {
 const RED = "#d93025";
 const GREEN = "#188038";
 const PURPLE = "#9334e6";
+const AMBER = "#e8710a";
 
 const fmt = (v: number | undefined, digits = 1): string =>
   v == undefined ? "—" : v.toFixed(digits);
@@ -68,6 +78,8 @@ function ControlPanel({ context }: { context: PanelExtensionContext }): ReactEle
   const [status, setStatus] = useState<{ text: string; error: boolean } | undefined>();
 
   const [servo, setServo] = useState(90);
+  const [servoDragging, setServoDragging] = useState(false);
+  const [lastMoveSentMs, setLastMoveSentMs] = useState<number | undefined>();
   const [dcDeg, setDcDeg] = useState("90");
   const [dcRpm, setDcRpm] = useState("30");
   const [stepDeg, setStepDeg] = useState("45");
@@ -91,7 +103,7 @@ function ControlPanel({ context }: { context: PanelExtensionContext }): ReactEle
     };
     context.watch("currentFrame");
     context.watch("colorScheme");
-    context.subscribe(Object.values(STATE).map((topic) => ({ topic })));
+    context.subscribe([...Object.values(STATE), STATUS_TOPIC].map((topic) => ({ topic })));
   }, [context]);
 
   // Advertise every command topic once; foxglove_bridge needs the ROS 2 definitions.
@@ -151,6 +163,15 @@ function ControlPanel({ context }: { context: PanelExtensionContext }): ReactEle
   const live = isLive(state, now);
   const sensorMode = state.mode === 1;
   const motorsEnabled = canPublish && live && !sensorMode;
+  const toneColor = (tone: Tone): string =>
+    tone === "good" ? GREEN : tone === "warn" ? AMBER : tone === "bad" ? RED : t.muted;
+  const link = linkView(state, now);
+  const dc = dcView(state, now, lastMoveSentMs);
+  const sliderValue = servoSliderValue({
+    dragging: servoDragging,
+    dragValue: servo,
+    live: state.servoDeg,
+  });
 
   const card: CSSProperties = {
     background: t.card,
@@ -191,6 +212,11 @@ function ControlPanel({ context }: { context: PanelExtensionContext }): ReactEle
     setServo(deg);
     send(() => commands.servo(deg));
   };
+  const sendDcMove = (deg: number) => {
+    if (send(() => commands.dcMove(deg)) != undefined) {
+      setLastMoveSentMs(Date.now());
+    }
+  };
 
   return (
     <div
@@ -212,15 +238,22 @@ function ControlPanel({ context }: { context: PanelExtensionContext }): ReactEle
       <div style={{ ...row, justifyContent: "space-between" }}>
         <span style={{ ...row, gap: 6 }}>
           <span
-            style={{ width: 10, height: 10, borderRadius: 5, background: live ? GREEN : RED }}
+            style={{ width: 10, height: 10, borderRadius: 5, background: toneColor(link.tone) }}
           />
-          <b>
-            {live
-              ? "Uno connected"
-              : state.connected === true
-                ? "No telemetry"
-                : "Uno disconnected"}
-          </b>
+          <b style={{ color: link.tone === "warn" ? AMBER : undefined }}>{link.text}</b>
+          {live && state.tofFault === true && (
+            <span
+              style={{
+                border: `1px solid ${AMBER}`,
+                color: AMBER,
+                borderRadius: 6,
+                padding: "0 6px",
+              }}
+              title="No valid TOF range for 0.5 s: the TOF values are frozen at their last reading"
+            >
+              TOF: no target
+            </span>
+          )}
         </span>
         {state.interlock === true && (
           <span
@@ -264,8 +297,7 @@ function ControlPanel({ context }: { context: PanelExtensionContext }): ReactEle
         </div>
         {sensorMode && (
           <div style={{ color: t.muted, marginTop: 6 }}>
-            Sensors drive the motors (TOF → servo, flex → DC, slot → stepper). Motor buttons are
-            off; STOP still works.
+            SENSOR mode: sensors drive the motors. Switch to GUI to command. STOP still works.
           </div>
         )}
       </div>
@@ -293,21 +325,30 @@ function ControlPanel({ context }: { context: PanelExtensionContext }): ReactEle
           min={LIMITS.servoDeg[0]}
           max={LIMITS.servoDeg[1]}
           step={1}
-          value={servo}
+          value={sliderValue}
           disabled={!motorsEnabled}
           style={{ width: "100%", marginTop: 6 }}
+          onPointerDown={() => {
+            setServo(sliderValue);
+            setServoDragging(true);
+          }}
           onChange={(e) => {
             setServo(Number(e.target.value));
           }}
           onPointerUp={() => {
+            setServoDragging(false);
             sendServo(servo);
           }}
+          onKeyDown={() => {
+            setServoDragging(true);
+          }}
           onKeyUp={() => {
+            setServoDragging(false);
             sendServo(servo);
           }}
         />
         <div style={row}>
-          <span style={value}>{servo}°</span>
+          <span style={value}>{sliderValue}°</span>
           {[0, 90, 180].map((deg) => (
             <button
               key={deg}
@@ -346,24 +387,27 @@ function ControlPanel({ context }: { context: PanelExtensionContext }): ReactEle
           <button
             disabled={!motorsEnabled}
             style={button()}
-            onClick={() => send(() => commands.dcMove(parseInput(dcDeg)))}
+            onClick={() => {
+              sendDcMove(parseInput(dcDeg));
+            }}
           >
             Move
           </button>
-          <button
-            disabled={!motorsEnabled}
-            style={button()}
-            onClick={() => send(() => commands.dcMove(-90))}
-          >
-            −90°
-          </button>
-          <button
-            disabled={!motorsEnabled}
-            style={button()}
-            onClick={() => send(() => commands.dcMove(90))}
-          >
-            +90°
-          </button>
+        </div>
+        <div style={{ ...row, marginTop: 4 }}>
+          {DC_MOVE_PRESETS.map((deg) => (
+            <button
+              key={deg}
+              disabled={!motorsEnabled}
+              style={{ ...button(), padding: "4px 7px" }}
+              onClick={() => {
+                sendDcMove(deg);
+              }}
+            >
+              {deg > 0 ? "+" : "−"}
+              {Math.abs(deg)}°
+            </button>
+          ))}
         </div>
         <div style={{ ...row, marginTop: 6 }}>
           <span style={{ width: 56 }}>Velocity</span>
@@ -383,6 +427,21 @@ function ControlPanel({ context }: { context: PanelExtensionContext }): ReactEle
           >
             Hold
           </button>
+        </div>
+        <div style={{ ...row, marginTop: 4 }}>
+          {DC_RPM_PRESETS.map((rpm) => (
+            <button
+              key={rpm}
+              disabled={!motorsEnabled}
+              style={{ ...button(), padding: "4px 7px" }}
+              onClick={() => send(() => commands.dcRpm(rpm))}
+            >
+              {rpm} rpm
+            </button>
+          ))}
+        </div>
+        <div style={{ marginTop: 6, color: toneColor(dc.tone), fontWeight: 600 }} role="status">
+          {dc.text}
         </div>
       </div>
 
@@ -421,11 +480,54 @@ function ControlPanel({ context }: { context: PanelExtensionContext }): ReactEle
         </div>
       </div>
 
-      {status && (
-        <div style={{ color: status.error ? RED : t.muted, fontSize: 12 }} role="status">
-          {status.text}
+      {/* SENSOR-mode mapping: what each sensor is doing to its motor right now */}
+      <div style={{ ...card, opacity: sensorMode ? 1 : 0.6 }}>
+        <div style={label}>SENSOR mode mapping{sensorMode ? " (active)" : ""}</div>
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "auto 1fr",
+            gap: "4px 10px",
+            marginTop: 6,
+          }}
+        >
+          <span>TOF swipe</span>
+          <span>
+            {state.tofFault === true ? "no target" : `${fmt(state.tofRawMm, 0)} mm`} → servo sweeps
+            at {SENSOR_MAP.swipeServoDegS}°/s, now <span style={value}>{fmt(state.servoDeg)}°</span>
+          </span>
+          <span>Flex bend</span>
+          <span>
+            <span style={value}>{fmt(state.flexFiltDeg)}°</span> → DC{" "}
+            {sensorMode && state.dcMode === 1 ? (
+              <span style={value}>{fmt(state.dcTarget)} rpm</span>
+            ) : (
+              `0–${SENSOR_MAP.dcMaxRpm} rpm`
+            )}{" "}
+            (dead zone below {SENSOR_MAP.flexDeadzoneDeg}°, full at {SENSOR_MAP.flexFullDeg}°)
+          </span>
+          <span>Slot pass</span>
+          <span>
+            count <span style={value}>{fmt(state.slotCount, 0)}</span> → stepper +
+            {SENSOR_MAP.slotJogDeg}° each, target{" "}
+            <span style={value}>{fmt(state.stepperTargetDeg, 2)}°</span>
+          </span>
         </div>
-      )}
+      </div>
+
+      {/* Command feedback: what the panel sent, and what the bridge saw happen */}
+      <div style={{ fontSize: 12, display: "flex", flexDirection: "column", gap: 2 }}>
+        {status && (
+          <div style={{ color: status.error ? RED : t.muted }} role="status">
+            {status.text}
+          </div>
+        )}
+        {[...(state.statuses ?? [])].reverse().map((s) => (
+          <div key={`${s.atMs}-${s.text}`} style={{ color: toneColor(statusTone(s.text)) }}>
+            {s.text}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

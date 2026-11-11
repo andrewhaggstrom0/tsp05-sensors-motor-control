@@ -4,7 +4,7 @@
   "description": "Command panel for the TSP05 Arduino: mode, servo, DC motor, stepper, stop.",
   "publisher": "tsp05",
   "homepage": "https://github.com/andrewhaggstrom0/tsp05-sensors-motor-control",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "license": "MIT",
   "main": "./dist/extension.js",
   "keywords": [],
