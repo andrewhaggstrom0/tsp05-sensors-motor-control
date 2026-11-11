@@ -86,6 +86,22 @@ Launch arguments: `port`, `baud` (115200), `fake`, `fake_link` (`/tmp/tsp05`),
 `ros2_ws/src/tsp05_bridge/tsp05_bridge/topics.py`; they follow the team guide
 with `fsr/*` renamed to `flex/*`.
 
+**Feedback topics.** The firmware does not report the DC target, arrival, a
+frozen TOF, or whether a command was obeyed, so the bridge works them out from
+the commands it sends and the telemetry (`tsp05_bridge/feedback.py`; thresholds
+are ROS parameters with defaults from `config.h`):
+
+| Topic | Type | Meaning |
+|---|---|---|
+| `/tsp05/dc/mode` | Int8 | DC controller mode: 0 idle, 1 velocity, 2 position |
+| `/tsp05/dc/target` | Float32 | position mode: target deg (dc_deg when sent + move); velocity mode: target rpm; idle: 0 |
+| `/tsp05/dc/arrived` | Bool | position mode and within 2 deg of the target (flickers if the motor coasts through) |
+| `/tsp05/dc/settled` | Bool | arrived and below 2 rpm for 5 lines in a row: what the GUI calls "arrived" |
+| `/tsp05/tof/fault` | Bool | TOF reading still 0 or unchanged for 500 ms (no valid range: values are frozen) |
+| `/tsp05/cmd/status` | String | per command: `applied in N ms`, `ignored (SENSOR mode)`, `ignored (interlock)`, or `no effect seen within 1 s` |
+| `/tsp05/bridge/rate_hz`, `/tsp05/bridge/line_age_ms` | Float32 | telemetry rate and time since the last line |
+| `/tsp05/interlock/threshold_c` | Float32 | interlock threshold (30 C), for a limit line on the temperature plot |
+
 ## Calibration Results
 <!-- Transfer function plot, filtering plot, error table per sensor -->
 

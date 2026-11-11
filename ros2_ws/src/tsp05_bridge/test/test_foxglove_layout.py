@@ -17,7 +17,8 @@ LAYOUT = PKG.parent.parent.parent / "foxglove" / "tsp05_layout.json"
 pytestmark = pytest.mark.skipif(not LAYOUT.exists(), reason="foxglove/ not in this checkout")
 
 KNOWN = {f"{t.NS}/{name}" for name in (
-    *t.FLOAT_TOPICS.values(), *t.FLAG_TOPICS.values(), *t.STATUS_TOPICS, *t.COMMAND_TOPICS)}
+    *t.FLOAT_TOPICS.values(), *t.FLAG_TOPICS.values(), *t.FEEDBACK_TOPICS,
+    *t.STATUS_TOPICS, *t.COMMAND_TOPICS)}
 
 
 @pytest.fixture(scope="module")

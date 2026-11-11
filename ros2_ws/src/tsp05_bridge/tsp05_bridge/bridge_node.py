@@ -28,7 +28,8 @@ from rclpy.node import Node
 from std_msgs.msg import Bool, Empty, Float32, Int8, String
 
 from tsp05_bridge import protocol as p
-from tsp05_bridge.topics import COMMAND_TOPICS, FLAG_TOPICS, FLOAT_TOPICS, NS
+from tsp05_bridge.feedback import Feedback, FeedbackConfig
+from tsp05_bridge.topics import COMMAND_TOPICS, FEEDBACK_TOPICS, FLAG_TOPICS, FLOAT_TOPICS, NS
 
 try:
     import serial  # pyserial
@@ -54,6 +55,20 @@ class BridgeNode(Node):
         self._pub_connected = self.create_publisher(Bool, f"{NS}/bridge/connected", 10)
         self._pub_log = self.create_publisher(String, f"{NS}/log", 10)
 
+        # Feedback worked out from commands + telemetry (tsp05_bridge.feedback).
+        # Thresholds are parameters whose defaults mirror firmware/tsp05/config.h.
+        cfg = FeedbackConfig()
+        for name, default in vars(FeedbackConfig()).items():
+            value = self.declare_parameter(name, default).value
+            setattr(cfg, name, type(default)(value))
+        self._fb = Feedback(cfg)
+        self._fb_lock = threading.Lock()     # reader thread (telemetry) vs executor (commands)
+        fb_types = {"dc/mode": Int8, "dc/target": Float32, "dc/arrived": Bool, "dc/settled": Bool,
+                    "tof/fault": Bool, "cmd/status": String, "bridge/rate_hz": Float32,
+                    "bridge/line_age_ms": Float32, "interlock/threshold_c": Float32}
+        assert set(fb_types) == set(FEEDBACK_TOPICS)
+        self._fb_pubs = {t: self.create_publisher(m, f"{NS}/{t}", 10) for t, m in fb_types.items()}
+
         # cmd topic -> (msg type, function from msg to command string)
         commands = {
             "cmd/mode": (Int8, lambda m: p.cmd_mode(int(m.data))),
@@ -76,6 +91,7 @@ class BridgeNode(Node):
         self._stats_t = time.monotonic()
         self.create_timer(stats_period, self._log_stats)
         self.create_timer(1.0, self._publish_connected)
+        self.create_timer(0.5, self._publish_health)
 
         if serial is None:
             self.get_logger().fatal("pyserial is not installed (apt install python3-serial)")
@@ -145,6 +161,16 @@ class BridgeNode(Node):
                 self._pubs[field].publish(Bool(data=bool(value)))
             else:
                 self._pubs[field].publish(Float32(data=value))
+        with self._fb_lock:
+            self._fb.on_telemetry(t, time.monotonic())
+            fb = self._fb
+            self._fb_pubs["dc/mode"].publish(Int8(data=fb.dc_mode))
+            self._fb_pubs["dc/target"].publish(Float32(data=float(fb.dc_target)))
+            self._fb_pubs["dc/arrived"].publish(Bool(data=fb.dc_arrived))
+            self._fb_pubs["dc/settled"].publish(Bool(data=fb.dc_settled))
+            self._fb_pubs["tof/fault"].publish(Bool(data=fb.tof_fault))
+            status = fb.take_status()
+        self._publish_status(status)
 
     # ------------------------------------------------------------ commands
     def _on_command(self, topic: str, build, msg) -> None:
@@ -166,6 +192,30 @@ class BridgeNode(Node):
                 return
         self._n_cmds += 1
         self.get_logger().info(f"sent {cmd}")
+        with self._fb_lock:
+            self._fb.on_command(cmd, time.monotonic())
+            status = self._fb.take_status()
+        self._publish_status(status)
+
+    # ------------------------------------------------------------ feedback
+    def _publish_status(self, lines) -> None:
+        for line in lines:
+            self._fb_pubs["cmd/status"].publish(String(data=line))
+            self.get_logger().info(f"status: {line}")
+
+    def _publish_health(self) -> None:
+        now = time.monotonic()
+        with self._fb_lock:
+            self._fb.tick(now)
+            status = self._fb.take_status()
+            rate = self._fb.rate_hz(now)
+            age = self._fb.line_age_s(now)
+            threshold = self._fb.cfg.interlock_temp_c
+        self._publish_status(status)
+        self._fb_pubs["bridge/rate_hz"].publish(Float32(data=float(rate)))
+        if age is not None:
+            self._fb_pubs["bridge/line_age_ms"].publish(Float32(data=float(age * 1000.0)))
+        self._fb_pubs["interlock/threshold_c"].publish(Float32(data=float(threshold)))
 
     # ------------------------------------------------------------ health
     def _publish_connected(self) -> None:
