@@ -96,6 +96,7 @@ DC_DEADBAND_RUN_PWM = cfg("DC_DEADBAND_RUN_PWM")
 TOF_PERIOD_S = cfg("TOF_PERIOD_MS") / 1000
 TOF_MEDIAN_N = int(cfg("TOF_MEDIAN_N"))
 TOF_EMA_ALPHA = cfg("TOF_EMA_ALPHA")
+TOF_STALE_S = cfg("TOF_STALE_MS") / 1000
 GESTURE_NEAR_MM = cfg("GESTURE_NEAR_MM")
 GESTURE_CLEAR_S = cfg("GESTURE_CLEAR_MS") / 1000
 GESTURE_SERVO_DEG_S = cfg("GESTURE_SERVO_DEG_S")
@@ -125,6 +126,14 @@ DISC_RPM = 30.0
 
 def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
+
+
+def rpm_from_span(span_s: float, edges: int) -> float:
+    """digital_math::rpmFromSpan(): edges intervals took span_s; 0 for an empty span.
+    (An edge and an rpm update can land on the same instant: span 0.)"""
+    if span_s <= 0 or edges <= 0:
+        return 0.0
+    return 60.0 * edges / (SLOT_TABS * span_s)
 
 
 def feedforward_pwm(rpm: float) -> float:
@@ -205,6 +214,7 @@ class FakeUno:
         self.tof_raw_mm, self.tof_filt_mm = 0, 0.0
         self._tof_hist: list[int] = []
         self._tof_seeded = False
+        self._tof_last_valid = None   # time of the last valid range (for tof_fault())
         self._pass_dir = 0            # swipe direction of the hand pass in progress
         self._pass_last_near = None   # time the hand was last seen
         self._swipe = 0               # pending swipe for tofTakeSwipe()
@@ -303,10 +313,16 @@ class FakeUno:
                 sum(sorted(self._tof_hist)[len(self._tof_hist) // 2 - 1:len(self._tof_hist) // 2 + 1]) / 2
             self.tof_filt_mm = self.tof_filt_mm + TOF_EMA_ALPHA * (med - self.tof_filt_mm) if self._tof_seeded else med
             self._tof_seeded = True
+            self._tof_last_valid = self.t
         # no hand: every range fails (nothing in short-range view), values hold
         if self._pass_dir and not hand and self.t - self._pass_last_near >= GESTURE_CLEAR_S:
             self._swipe = self._pass_dir      # both zones clear long enough: report the swipe
             self._pass_dir = 0
+
+    def tof_fault(self) -> bool:
+        """tofFault(): no valid range yet, or none for longer than TOF_STALE_MS.
+        Not in the telemetry line; tests use it as ground truth."""
+        return self._tof_last_valid is None or self.t - self._tof_last_valid > TOF_STALE_S
 
     def _take_swipe(self) -> int:
         s, self._swipe = self._swipe, 0
@@ -336,8 +352,8 @@ class FakeUno:
             return
         newest, oldest, second = e[-1], e[-1 - edges], e[-edges]
         since = self.t - newest
-        rpm = 60.0 * edges / (SLOT_TABS * (newest - oldest))
-        bound = 60.0 * edges / (SLOT_TABS * ((newest - second) + since))
+        rpm = rpm_from_span(newest - oldest, edges)
+        bound = rpm_from_span((newest - second) + since, edges)
         self.slot_rpm = bound if 0 < bound < rpm else rpm
 
     def _take_slot_events(self) -> int:
