@@ -10,6 +10,7 @@ struct SFEVL53L1X {
   void     setDistanceModeShort() {}
   void     setTimingBudgetInMs(uint16_t) {}
   void     setIntermeasurementPeriod(uint16_t) {}
+  void     setROI(uint8_t, uint8_t, uint8_t) {}
   void     startRanging() {}
   bool     checkForDataReady() { return fake_tof_ready; }
   uint16_t getDistance() { return fake_tof_mm; }

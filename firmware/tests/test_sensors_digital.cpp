@@ -189,6 +189,25 @@ static void test_missing_tof() {
   CHECK(slotCount() == before + 1, "slot sensor must work without the TOF");
 }
 
+// Ranges alternate left, right, left... starting with left after init; a swipe is
+// reported once, after the hand has left both halves.
+static void test_tof_swipe() {
+  fake_tof_begin = 0;
+  digitalSensorsInit();
+  auto pair = [](uint16_t left, uint16_t right) { tofRange(left); tofRange(right); };
+  const uint16_t FAR = 1200, HAND = 350;
+
+  pair(FAR, FAR); pair(HAND, FAR); pair(HAND, HAND); pair(FAR, HAND);
+  pair(FAR, FAR); pair(FAR, FAR); pair(FAR, FAR);
+  CHECK(tofTakeSwipe() == 1, "left-to-right swipe must be reported as +1");
+  CHECK(tofTakeSwipe() == 0, "a swipe must be reported only once");
+
+  pair(FAR, HAND); pair(HAND, HAND); pair(HAND, FAR);
+  pair(FAR, FAR); pair(FAR, FAR); pair(FAR, FAR);
+  CHECK(tofTakeSwipe() == -1, "right-to-left swipe must be reported as -1");
+  CHECK(!tofFault(), "distance must stay valid while zones alternate");
+}
+
 int main() {
   fake_millis = 10;
   fake_micros = 10000;
@@ -199,6 +218,7 @@ int main() {
   test_tof();
   test_slot();
   test_slot_uneven_tabs();
+  test_tof_swipe();
   test_missing_tof();
 
   printf("%d passed, %d failed\n", g_pass, g_fail);

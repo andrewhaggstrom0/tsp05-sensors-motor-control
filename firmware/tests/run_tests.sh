@@ -11,7 +11,7 @@ g++ -std=c++17 -Wall -Wextra -Werror -O1 \
 
 g++ -std=c++17 -Wall -Wextra -Werror -O1 \
     -I shim -I ../tsp05 \
-    test_sensors_digital.cpp ../tsp05/sensors_digital.cpp \
+    test_sensors_digital.cpp ../tsp05/sensors_digital.cpp ../tsp05/tof_gesture.cpp \
     -o build/test_sensors_digital
 ./build/test_sensors_digital
 g++ -std=c++17 -Wall -Wextra -Werror -O1 \
