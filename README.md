@@ -95,6 +95,7 @@ are ROS parameters with defaults from `config.h`):
 |---|---|---|
 | `/tsp05/dc/mode` | Int8 | DC controller mode: 0 idle, 1 velocity, 2 position |
 | `/tsp05/dc/target` | Float32 | position mode: target deg (dc_deg when sent + move); velocity mode: target rpm; idle: 0 |
+| `/tsp05/dc/target_deg`, `/tsp05/dc/target_rpm` | Float32 | the same target split by unit for plots: NaN (a gap) when not in that mode |
 | `/tsp05/dc/arrived` | Bool | position mode and within 2 deg of the target (flickers if the motor coasts through) |
 | `/tsp05/dc/settled` | Bool | arrived and below 2 rpm for 5 lines in a row: what the GUI calls "arrived" |
 | `/tsp05/tof/fault` | Bool | TOF reading still 0 or unchanged for 500 ms (no valid range: values are frozen) |

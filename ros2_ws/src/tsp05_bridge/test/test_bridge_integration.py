@@ -65,7 +65,8 @@ class Harness:
         topics = {t: Float32 for t in FLOAT_TOPICS.values()}
         topics.update({t: m for t, m in SPECIAL_TOPICS.values()})
         topics["bridge/connected"] = Bool
-        topics.update({"dc/mode": Int8, "dc/target": Float32, "dc/arrived": Bool, "dc/settled": Bool,
+        topics.update({"dc/mode": Int8, "dc/target": Float32, "dc/target_deg": Float32,
+                       "dc/target_rpm": Float32, "dc/arrived": Bool, "dc/settled": Bool,
                        "tof/fault": Bool, "bridge/rate_hz": Float32, "bridge/line_age_ms": Float32,
                        "interlock/threshold_c": Float32})
         for topic, msg_type in topics.items():
@@ -223,10 +224,12 @@ def test_feedback_topics_follow_a_dc_move(env):
     assert h.wait(lambda: h.last["dc/mode"] == 2 and h.last["dc/target"] == pytest.approx(start + 90.0, abs=1.0))
     assert h.wait(lambda: h.last["dc/settled"] is True and h.last["dc/arrived"] is True, 3.0)
     assert abs(h.last["dc/deg"] - h.last["dc/target"]) <= 2.0
+    assert h.last["dc/target_deg"] == h.last["dc/target"] and math.isnan(h.last["dc/target_rpm"])
     assert h.wait(lambda: any(x.startswith("D,P,90.0: applied in ") for x in h.status)), h.status
     h.send("dc_rpm", Float32, -45.0)
     assert h.wait(lambda: h.last["dc/mode"] == 1 and h.last["dc/target"] == pytest.approx(-45.0)
                   and h.last["dc/settled"] is False)
+    assert h.wait(lambda: h.last["dc/target_rpm"] == pytest.approx(-45.0) and math.isnan(h.last["dc/target_deg"]))
     h.send("dc_stop", Empty)
     assert h.wait(lambda: h.last["dc/mode"] == 0 and h.last["dc/target"] == 0.0)
 

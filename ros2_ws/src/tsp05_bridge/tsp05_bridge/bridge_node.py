@@ -28,7 +28,7 @@ from rclpy.node import Node
 from std_msgs.msg import Bool, Empty, Float32, Int8, String
 
 from tsp05_bridge import protocol as p
-from tsp05_bridge.feedback import Feedback, FeedbackConfig
+from tsp05_bridge.feedback import DC_POSITION, DC_VELOCITY, Feedback, FeedbackConfig
 from tsp05_bridge.topics import COMMAND_TOPICS, FEEDBACK_TOPICS, FLAG_TOPICS, FLOAT_TOPICS, NS
 
 try:
@@ -63,7 +63,8 @@ class BridgeNode(Node):
             setattr(cfg, name, type(default)(value))
         self._fb = Feedback(cfg)
         self._fb_lock = threading.Lock()     # reader thread (telemetry) vs executor (commands)
-        fb_types = {"dc/mode": Int8, "dc/target": Float32, "dc/arrived": Bool, "dc/settled": Bool,
+        fb_types = {"dc/mode": Int8, "dc/target": Float32, "dc/target_deg": Float32,
+                    "dc/target_rpm": Float32, "dc/arrived": Bool, "dc/settled": Bool,
                     "tof/fault": Bool, "cmd/status": String, "bridge/rate_hz": Float32,
                     "bridge/line_age_ms": Float32, "interlock/threshold_c": Float32}
         assert set(fb_types) == set(FEEDBACK_TOPICS)
@@ -166,6 +167,12 @@ class BridgeNode(Node):
             fb = self._fb
             self._fb_pubs["dc/mode"].publish(Int8(data=fb.dc_mode))
             self._fb_pubs["dc/target"].publish(Float32(data=float(fb.dc_target)))
+            # One unit per topic for plots: NaN (a gap) when the target is not in that unit.
+            nan = float("nan")
+            self._fb_pubs["dc/target_deg"].publish(
+                Float32(data=float(fb.dc_target) if fb.dc_mode == DC_POSITION else nan))
+            self._fb_pubs["dc/target_rpm"].publish(
+                Float32(data=float(fb.dc_target) if fb.dc_mode == DC_VELOCITY else nan))
             self._fb_pubs["dc/arrived"].publish(Bool(data=fb.dc_arrived))
             self._fb_pubs["dc/settled"].publish(Bool(data=fb.dc_settled))
             self._fb_pubs["tof/fault"].publish(Bool(data=fb.tof_fault))
