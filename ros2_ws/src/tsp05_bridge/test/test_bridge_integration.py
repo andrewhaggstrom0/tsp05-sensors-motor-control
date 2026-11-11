@@ -24,7 +24,9 @@ from std_msgs.msg import Bool, Empty, Float32, Int8, String  # noqa: E402
 
 PKG = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PKG))
-from tsp05_bridge.bridge_node import FLOAT_TOPICS, NS, SPECIAL_TOPICS, BridgeNode  # noqa: E402
+from tsp05_bridge.bridge_node import (EXTRA_TYPES, FLOAT_TOPICS, NS, SPECIAL_TOPICS,  # noqa: E402
+                                      BridgeNode)
+from tsp05_bridge.topics import EXTRA_TOPICS  # noqa: E402
 
 FAKE = PKG.parent.parent.parent / "tools" / "fake_arduino.py"
 
@@ -65,6 +67,7 @@ class Harness:
         topics = {t: Float32 for t in FLOAT_TOPICS.values()}
         topics.update({t: m for t, m in SPECIAL_TOPICS.values()})
         topics["bridge/connected"] = Bool
+        topics.update({t: EXTRA_TYPES[f] for f, t in EXTRA_TOPICS.items()})
         for topic, msg_type in topics.items():
             self.probe.create_subscription(msg_type, f"{NS}/{topic}",
                                            lambda m, t=topic: self._rx(t, m.data), 50)
@@ -207,3 +210,84 @@ def test_survives_malformed_lines():
         h.close()
         fake.stop()
         rclpy.shutdown()
+
+
+# ---------------------------------------------------------------- appended fields
+def _start(*fake_args):
+    init_isolated()
+    link = os.path.join(tempfile.mkdtemp(), "tsp05")
+    fake = Fake(link, *fake_args)
+    fake.start()
+    return Harness(link), fake
+
+
+def _stop(h, fake):
+    h.close()
+    fake.stop()
+    rclpy.shutdown()
+
+
+def _bridge_publishes(h, topic):
+    names = h.bridge.get_publisher_names_and_types_by_node("tsp05_bridge", "/")
+    return any(name == f"{NS}/{topic}" for name, _ in names)
+
+
+def test_appended_fields_published_and_track_commands():
+    h, fake = _start()
+    try:
+        assert h.wait(lambda: set(EXTRA_TOPICS.values()) <= set(h.last)), "appended topics missing"
+        assert all(_bridge_publishes(h, t) for t in EXTRA_TOPICS.values())
+        assert h.last["dc/mode"] == 0 and h.last["dc/target"] == 0.0 and h.last["dc/arrived"] is False
+
+        start = h.last["dc/deg"]
+        h.send("dc_move_deg", Float32, 90.0)
+        assert h.wait(lambda: h.last["dc/mode"] == 2 and h.last["dc/target"] == pytest.approx(start + 90.0, abs=1.0))
+        assert h.wait(lambda: h.last["dc/arrived"] is True, 3.0), "dc/arrived never went to 1"
+        # dc_arrived is instantaneous: the controller stops driving on entering the
+        # +-2 deg band, so the motor can coast through it and be driven back (the
+        # hardware 90 deg step overshoots to 94). Check the settled state.
+        assert h.wait(lambda: h.last["dc/arrived"] is True and abs(h.last["dc/rpm"]) < 1.0
+                      and abs(h.last["dc/deg"] - h.last["dc/target"]) <= 2.0, 3.0), \
+            (h.last["dc/deg"], h.last["dc/target"], h.last["dc/rpm"])
+
+        h.send("dc_rpm", Float32, -45.0)
+        # Each field is its own ROS message: wait for all three from the same state.
+        assert h.wait(lambda: h.last["dc/mode"] == 1 and h.last["dc/target"] == pytest.approx(-45.0)
+                      and h.last["dc/arrived"] is False)
+        h.send("dc_stop", Empty)
+        assert h.wait(lambda: h.last["dc/mode"] == 0 and h.last["dc/target"] == 0.0)
+    finally:
+        _stop(h, fake)
+
+
+def test_tof_fault_follows_valid_ranges():
+    """The fake's hand passes the TOF at 2.0-2.4 s of every 10 s: fault 1 before
+    (no valid range since boot), 0 while ranging, 1 again ~0.5 s after."""
+    h, fake = _start()
+    try:
+        seen = []
+        end = time.monotonic() + 12.0          # one full 10 s hand cycle, whatever the start
+        while time.monotonic() < end and [v for _, v in seen][-3:] != [True, False, True]:
+            h.ex.spin_once(timeout_sec=0.02)
+            if "tof/fault" in h.last and (not seen or seen[-1][1] != h.last["tof/fault"]):
+                seen.append((time.monotonic(), h.last["tof/fault"]))
+        seen = seen[-3:]
+        values = [v for _, v in seen]
+        assert values[:3] == [True, False, True], seen
+        t_clear = next(t for t, v in seen if v is False)
+        t_fault = next(t for t, v in seen if v is True and t > t_clear)
+        assert 0.4 <= t_fault - t_clear <= 1.2, f"fault after {t_fault - t_clear:.2f} s of ranging + stale time"
+    finally:
+        _stop(h, fake)
+
+
+def test_legacy_firmware_has_no_appended_topics():
+    h, fake = _start("--legacy-telemetry")
+    try:
+        assert h.wait(lambda: h.count.get("servo/deg", 0) > 20), "no telemetry from the 19-field fake"
+        h.spin(0.5)
+        assert not any(_bridge_publishes(h, t) for t in EXTRA_TOPICS.values())
+        assert not set(EXTRA_TOPICS.values()) & set(h.count)
+        assert h.bridge._n_bad == 0
+    finally:
+        _stop(h, fake)
