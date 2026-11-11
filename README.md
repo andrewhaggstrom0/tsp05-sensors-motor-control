@@ -45,12 +45,26 @@ With the real Uno on a Linux host, pass the device in:
 
     TSP05_SERIAL_DEVICE=/dev/ttyACM0 docker/run.sh ros2 launch tsp05_bridge tsp05.launch.py port:=/dev/ttyACM0
 
-Docker Desktop on macOS cannot pass USB devices to a container. Share the port
-over TCP on the Mac instead (`brew install socat`; the device name varies), then
-point the bridge at it:
+**Real Uno on macOS.** Docker Desktop on macOS cannot pass USB devices to a
+container, so `tools/uno_relay.sh` shares the Uno's port over TCP on the Mac and
+the bridge connects to it. One-time setup: `brew install socat`. A genuine Uno
+needs no driver and shows up as `/dev/cu.usbmodem*`; CH340 clones show up as
+`/dev/cu.usbserial-*`. Close the Arduino Serial Monitor first, since only one
+program can hold the port.
 
-    socat TCP-LISTEN:7000,reuseaddr FILE:/dev/cu.usbmodem1101,b115200,raw,echo=0
-    docker/run.sh ros2 launch tsp05_bridge tsp05.launch.py port:=socket://host.docker.internal:7000
+    tools/uno_relay.sh                     # terminal 1: finds the Uno, listens on 127.0.0.1:7777
+    docker/run.sh ros2 launch tsp05_bridge tsp05.launch.py port:=socket://host.docker.internal:7777   # terminal 2
+
+The bridge log should show `connected to socket://host.docker.internal:7777`,
+then `telemetry 20.0 Hz, 0 malformed` every 10 s. Opening the port resets the
+Uno, so the first 10 s window reads low (about 17 Hz) and may count a few
+malformed lines cut by the reset; that is expected.
+
+Notes on the relay: port 7777, because macOS's AirPlay Receiver already
+listens on 7000. socat 1.8 on macOS needs `ispeed=115200,ospeed=115200` (it
+rejects `b115200`). `fork` lets the bridge reconnect after a restart.
+Measured on the Uno through this relay: 19.9-20.0 Hz, 0 malformed after the
+first window; servo command to telemetry 24-58 ms.
 
 **Native Ubuntu** (ROS 2 sourced):
 
