@@ -28,9 +28,10 @@ What it reports, and how:
              silently), or no effect seen within cmd_timeout_s.
   rate_hz    telemetry lines per second over rate_window_s.
 
-The same names are what the firmware would send if the protocol gains these
-fields (see the proposal on branch proto/telemetry-feedback-fields); the bridge
-would then take them from the line instead of working them out here.
+Newer firmware sends dc_mode, dc_target, dc_arrived and tof_fault at the end of
+the line (docs/protocol.md). When a line carries them they are used as sent and
+only dc_settled, the command status and the rate are worked out here; with older
+firmware (19-field line) everything above is worked out.
 """
 from __future__ import annotations
 
@@ -90,6 +91,7 @@ class Feedback:
         self.dc_arrived = False
         self.dc_settled = False
         self.tof_fault = True
+        self.source = "inferred"     # "firmware" once lines carry dc_mode..tof_fault
         self._settle_run = 0
         self._last: Optional[Dict[str, float]] = None
         self._prev_mode: Optional[int] = None
@@ -206,8 +208,15 @@ class Feedback:
                     self._set_velocity(rpm)
                 self._last_map_rpm, self._map_sent = rpm, True
 
-        self.dc_arrived = (self.dc_mode == DC_POSITION
-                           and abs(t["dc_deg"] - self.dc_target) <= self.cfg.dc_pos_tol_deg)
+        if "dc_mode" in t:
+            # Newer firmware sends these itself (docs/protocol.md): use them as they are.
+            self.source = "firmware"
+            self.dc_mode, self.dc_target = int(t["dc_mode"]), t["dc_target"]
+            self.dc_arrived = bool(t["dc_arrived"])
+        else:
+            self.source = "inferred"
+            self.dc_arrived = (self.dc_mode == DC_POSITION
+                               and abs(t["dc_deg"] - self.dc_target) <= self.cfg.dc_pos_tol_deg)
         slow = abs(t["dc_rpm"]) < self.cfg.dc_moving_rpm
         self._settle_run = self._settle_run + 1 if (self.dc_arrived and slow) else 0
         self.dc_settled = self._settle_run >= self.cfg.settle_lines
@@ -215,7 +224,10 @@ class Feedback:
         raw = t["tof_raw_mm"]
         if raw != self._tof_raw:
             self._tof_raw, self._tof_changed_at = raw, now
-        self.tof_fault = raw == 0 or (now - self._tof_changed_at) * 1000.0 >= self.cfg.tof_stale_ms
+        if "tof_fault" in t:
+            self.tof_fault = bool(t["tof_fault"])
+        else:
+            self.tof_fault = raw == 0 or (now - self._tof_changed_at) * 1000.0 >= self.cfg.tof_stale_ms
 
         self._prev_mode, self._prev_interlock, self._last = mode, interlock, t
         self._resolve(t, now)

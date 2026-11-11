@@ -38,7 +38,9 @@ except ImportError:  # pragma: no cover - reported at startup
 
 # mode is std_msgs/Int8 and interlock std_msgs/Bool; every other field is Float32
 SPECIAL_TOPICS = {"mode": (FLAG_TOPICS["mode"], Int8), "interlock": (FLAG_TOPICS["interlock"], Bool)}
-assert set(FLOAT_TOPICS) | set(SPECIAL_TOPICS) == set(p.TELEMETRY_FIELDS)
+assert set(FLOAT_TOPICS) | set(SPECIAL_TOPICS) == set(p.TELEMETRY_FIELDS_BASE)
+# The appended fields (dc_mode, dc_target, dc_arrived, tof_fault; newer firmware) go to
+# the feedback module, which publishes them on the same topics it otherwise works out.
 
 
 class BridgeNode(Node):
@@ -156,6 +158,8 @@ class BridgeNode(Node):
             return
         self._n_lines += 1
         for field, value in t.items():
+            if field not in self._pubs:
+                continue                 # appended fields: published via feedback below
             if field == "mode":
                 self._pubs[field].publish(Int8(data=int(value)))
             elif field == "interlock":

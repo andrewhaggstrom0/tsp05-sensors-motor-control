@@ -144,7 +144,11 @@ static void updateInterlock() {
 // Telemetry. The line is built into a buffer and sent only as fast as the
 // 64-byte Serial TX buffer has room, so printing never stalls the loop.
 // ===========================================================================
-static char     g_tx[160];      // longest possible line is ~141 chars
+// Worst case 145 chars incl. '\n' with every field at its widest (ms and
+// slot_count as 10-digit longs, temp_C -273.15, dc_deg/dc_target +-999999.9,
+// step angles +-99999.99). If a line ever overflowed, addStr() would drop the
+// '\n' and two lines would run together, so keep this comfortably larger.
+static char     g_tx[160];
 static uint8_t  g_txLen = 0;
 static uint8_t  g_txPos = 0;
 
@@ -200,6 +204,11 @@ static void buildTelemetry() {
   addFloat(stepperDeg(), 2);
   addFloat(stepperTargetDeg(), 2);
   addLong(g_interlock ? 1 : 0);
+  // Appended fields (docs/protocol.md): receivers also accept lines without them.
+  addLong(dcMode());
+  addFloat(dcTarget(), 1);
+  addLong(dcArrived() ? 1 : 0);
+  addLong(tofFault() ? 1 : 0);
   addStr("\n");
 }
 

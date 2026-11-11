@@ -256,3 +256,24 @@ def test_feedback_tof_fault_follows_the_hand(env):
         if "tof/fault" in h.last and (not seen or seen[-1] != h.last["tof/fault"]):
             seen.append(h.last["tof/fault"])
     assert seen[-3:] == [True, False, True], seen
+
+
+def test_feedback_also_works_with_older_firmware():
+    """19-field telemetry (firmware before dc_mode..tof_fault): the same topics,
+    worked out by the bridge, and nothing counted as malformed."""
+    init_isolated()
+    link = os.path.join(tempfile.mkdtemp(), "tsp05")
+    fake = Fake(link, "--legacy-telemetry")
+    fake.start()
+    h = Harness(link)
+    try:
+        assert h.wait(lambda: {"dc/mode", "dc/target", "tof/fault"} <= set(h.last))
+        start = h.last["dc/deg"]
+        h.send("dc_move_deg", Float32, 90.0)
+        assert h.wait(lambda: h.last["dc/mode"] == 2 and h.last["dc/target"] == pytest.approx(start + 90.0, abs=1.0))
+        assert h.wait(lambda: h.last["dc/settled"] is True, 3.0)
+        assert h.bridge._n_bad == 0 and h.bridge._fb.source == "inferred"
+    finally:
+        h.close()
+        fake.stop()
+        rclpy.shutdown()

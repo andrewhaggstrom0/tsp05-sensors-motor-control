@@ -89,9 +89,9 @@ Launch arguments: `port`, `baud` (115200), `fake`, `fake_link` (`/tmp/tsp05`),
 `ros2_ws/src/tsp05_bridge/tsp05_bridge/topics.py`; they follow the team guide
 with `fsr/*` renamed to `flex/*`.
 
-**Feedback topics.** The firmware does not report the DC target, arrival, a
-frozen TOF, or whether a command was obeyed, so the bridge works them out from
-the commands it sends and the telemetry (`tsp05_bridge/feedback.py`; thresholds
+**Feedback topics.** Firmware that sends `dc_mode`, `dc_target`, `dc_arrived` and
+`tof_fault` (docs/protocol.md) supplies those four directly; with older firmware
+(19-field line) the bridge works them out from the commands it sends and the telemetry (`tsp05_bridge/feedback.py`; thresholds
 are ROS parameters with defaults from `config.h`):
 
 | Topic | Type | Meaning |

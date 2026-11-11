@@ -34,7 +34,7 @@ def test_fields_match_protocol_md():
 # ---------------------------------------------------------------- telemetry
 def test_parse_good_line():
     t = p.parse_telemetry(GOOD)
-    assert list(t) == list(p.TELEMETRY_FIELDS)
+    assert list(t) == list(p.TELEMETRY_FIELDS_BASE)        # older firmware: base fields only
     assert t["ms"] == 2004 and t["mode"] == 0 and t["flex_raw"] == 425
     assert t["temp_C"] == pytest.approx(23.9)
     assert t["servo_deg"] == 90.0 and t["interlock"] == 0
@@ -127,19 +127,30 @@ def test_fake_arduino_lines_parse(fake):
         p.parse_telemetry(uno.telemetry())
 
 
-def test_fake_arduino_corrupt_lines_rejected(fake):
-    uno = fake.FakeUno("room", 1.0, seed=2)      # corrupt every line
-    rejected = 0
-    for _ in range(400):
+@pytest.mark.parametrize("legacy", [True, False])
+def test_fake_arduino_corrupt_lines_rejected(fake, legacy):
+    """Corrupted lines are rejected. The one exception, with the 23-field line: a
+    cut exactly after "interlock" is a valid older (19-field) line. Its values are
+    the line's own correct base values, so accepting it loses nothing but the
+    appended fields of that one line."""
+    uno = fake.FakeUno("room", 0.0, seed=2, legacy=legacy)
+    accepted_cuts = 0
+    for _ in range(2000):
         uno.step(0.05)
-        line = uno.telemetry()
-        if not p.is_telemetry(line):
-            rejected += 1
+        clean = uno.telemetry()
+        bad = uno._corrupt(clean)
+        if not p.is_telemetry(bad):
             continue
-        with pytest.raises(p.ParseError):
-            p.parse_telemetry(line)
-        rejected += 1
-    assert rejected == 400
+        try:
+            t = p.parse_telemetry(bad)
+        except p.ParseError:
+            continue
+        assert not legacy, f"corrupted legacy line accepted: {bad!r}"
+        base = ",".join(clean.split(",")[:1 + len(p.TELEMETRY_FIELDS_BASE)])
+        assert bad.rstrip() == base, f"accepted a corrupted line: {bad!r}"
+        assert t == {k: v for k, v in p.parse_telemetry(clean).items() if k in p.TELEMETRY_FIELDS_BASE}
+        accepted_cuts += 1
+    assert legacy or accepted_cuts < 2000 * 0.05     # rare: the cut must land on one exact comma
 
 
 def test_fake_arduino_accepts_every_command(fake):

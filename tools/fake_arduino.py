@@ -7,7 +7,9 @@ and predicts what the real board will do. Other tracks can use it too.
 It mirrors the firmware on main, not an idealised device:
   * every constant comes from firmware/tsp05/config.h (and the DC speed map from
     dc_control.cpp), so changing a value there changes the fake too
-  * the telemetry line has the exact protocol.md fields and the firmware's
+  * the telemetry line has the exact protocol.md fields, including the appended
+    dc_mode, dc_target, dc_arrived and tof_fault (--legacy-telemetry sends the
+    older 19-field line instead), and the firmware's
     number formats (temp_C and stepper angles with 2 decimals, the rest with 1)
   * commands are parsed like tsp05.ino: atof/atoi semantics, 31-char lines,
     and motor commands are ignored *silently* in SENSOR mode
@@ -195,10 +197,12 @@ class FakeUno:
 
     MODE_GUI, MODE_SENSOR = 0, 1
 
-    def __init__(self, temp_profile: str = "cycle", bad_rate: float = 0.0, seed: int | None = None):
+    def __init__(self, temp_profile: str = "cycle", bad_rate: float = 0.0, seed: int | None = None,
+                 legacy: bool = False):
         self.rng = random.Random(seed)
         self.temp_profile = temp_profile
         self.bad_rate = bad_rate
+        self.legacy = legacy          # True: older firmware's 19-field line
         self.t = 0.0
         self.cmd_count = 0
         self.ignored_count = 0
@@ -214,7 +218,7 @@ class FakeUno:
         self.tof_raw_mm, self.tof_filt_mm = 0, 0.0
         self._tof_hist: list[int] = []
         self._tof_seeded = False
-        self._tof_last_valid = None   # time of the last valid range (for tof_fault())
+        self._tof_last_valid = None   # time of the last valid range
         self._pass_dir = 0            # swipe direction of the hand pass in progress
         self._pass_last_near = None   # time the hand was last seen
         self._swipe = 0               # pending swipe for tofTakeSwipe()
@@ -319,11 +323,6 @@ class FakeUno:
             self._swipe = self._pass_dir      # both zones clear long enough: report the swipe
             self._pass_dir = 0
 
-    def tof_fault(self) -> bool:
-        """tofFault(): no valid range yet, or none for longer than TOF_STALE_MS.
-        Not in the telemetry line; tests use it as ground truth."""
-        return self._tof_last_valid is None or self.t - self._tof_last_valid > TOF_STALE_S
-
     def _take_swipe(self) -> int:
         s, self._swipe = self._swipe, 0
         return s
@@ -394,7 +393,29 @@ class FakeUno:
 
     def dc_stop(self) -> None:
         self.dc_mode = "idle"
+        self.dc_target_rpm = 0.0      # ctrlStop() clears the velocity target
         self.dc_pwm = 0
+
+    # Appended telemetry fields, as dc_motor.cpp / sensors_digital.cpp report them
+    def dc_mode_code(self) -> int:
+        """dcMode(): 0 idle, 1 velocity, 2 position."""
+        return {"idle": 0, "velocity": 1, "position": 2}[self.dc_mode]
+
+    def dc_target(self) -> float:
+        """dcTarget(): target deg in position mode, target rpm in velocity mode, else 0."""
+        if self.dc_mode == "position":
+            return self.dc_target_counts * 360.0 / DC_COUNTS_PER_REV
+        if self.dc_mode == "velocity":
+            return self.dc_target_rpm
+        return 0.0
+
+    def dc_arrived_flag(self) -> bool:
+        """dcArrived(): position mode and inside DC_POS_TOL_DEG."""
+        return self.dc_mode == "position" and self.dc_arrived
+
+    def tof_fault(self) -> bool:
+        """tofFault(): no valid range yet, or none for longer than TOF_STALE_MS."""
+        return self._tof_last_valid is None or self.t - self._tof_last_valid > TOF_STALE_S
 
     def _dc(self, dt: float) -> None:
         drive_rpm = 0.0
@@ -518,6 +539,9 @@ class FakeUno:
             f"{self.step_target * 360.0 / STEPS_PER_REV:.2f}",
             "1" if self.interlock else "0",
         ]
+        if not self.legacy:
+            fields += [str(self.dc_mode_code()), f"{self.dc_target():.1f}",
+                       "1" if self.dc_arrived_flag() else "0", "1" if self.tof_fault() else "0"]
         line = ",".join(fields)
         if self.bad_rate and self.rng.random() < self.bad_rate:
             line = self._corrupt(line)
@@ -561,10 +585,12 @@ def main() -> None:
     ap.add_argument("--bad-rate", type=float, default=0.0,
                     help="fraction of telemetry lines to corrupt (robustness testing)")
     ap.add_argument("--seed", type=int, help="random seed for repeatable runs")
+    ap.add_argument("--legacy-telemetry", action="store_true",
+                    help="send the older 19-field line (firmware before dc_mode..tof_fault)")
     args = ap.parse_args()
 
     master, path = open_pty(args.link)
-    uno = FakeUno(args.temp, args.bad_rate, args.seed)
+    uno = FakeUno(args.temp, args.bad_rate, args.seed, legacy=args.legacy_telemetry)
     print(f"fake Arduino on {path}" + (f" (symlink {args.link})" if args.link else ""), flush=True)
 
     def stop(*_):

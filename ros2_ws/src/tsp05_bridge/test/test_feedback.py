@@ -164,7 +164,8 @@ class Session:
     MODES = {"idle": DC_IDLE, "velocity": DC_VELOCITY, "position": DC_POSITION}
 
     def __init__(self, fa, temp="room", seed=1):
-        self.uno = fa.FakeUno(temp, 0.0, seed=seed)
+        # legacy: the 19-field line, so the feedback is worked out, not read from the line
+        self.uno = fa.FakeUno(temp, 0.0, seed=seed, legacy=True)
         self.fb = Feedback()
         self.lines = 0
         self.dc_mismatch = []     # (t, inferred, truth)
@@ -241,3 +242,35 @@ def test_tof_fault_matches_fake(fa):
     assert s.fb.tof_fault is True
     # Disagreements only at transitions (the bridge needs one line to see a change).
     assert len(s.tof_mismatch) <= 2 * 3 * 2, s.tof_mismatch
+
+
+def test_firmware_fields_are_used_when_present():
+    fb = Feedback()
+    t = line(dc_deg="10.0") | {"dc_mode": 2.0, "dc_target": 100.0, "dc_arrived": 0.0, "tof_fault": 0.0}
+    fb.on_telemetry(t, 0.0)
+    assert (fb.source, fb.dc_mode, fb.dc_target, fb.dc_arrived, fb.tof_fault) == ("firmware", 2, 100.0, False, False)
+    for k in range(5):
+        fb.on_telemetry(t | {"dc_deg": 99.0, "dc_arrived": 1.0}, 0.05 * (k + 1))
+    assert fb.dc_arrived and fb.dc_settled                # settled is still worked out here
+    fb.on_telemetry(line(tof=0), 1.0)                      # a 19-field line: back to inference
+    assert fb.source == "inferred" and fb.tof_fault
+
+
+def test_firmware_fields_agree_with_inference_on_the_fake(fa):
+    """The fake sends the fields like the new firmware; inference from the same
+    session (without them) must agree with them."""
+    uno = fa.FakeUno("cycle", 0.0, seed=4)
+    fw, inf = Feedback(), Feedback()
+    mismatches = 0
+    script = {20: "D,P,90.0", 60: "D,V,-60.0", 90: "D,X", 110: "M,1", 500: "M,0"}
+    for i in range(800):                                   # 40 s
+        if i in script:
+            uno.handle(script[i]); fw.on_command(script[i], uno.t); inf.on_command(script[i], uno.t)
+        for _ in range(5):
+            uno.step()
+        full = p.parse_telemetry(uno.telemetry())
+        base = {k: v for k, v in full.items() if k in p.TELEMETRY_FIELDS_BASE}
+        fw.on_telemetry(full, uno.t); inf.on_telemetry(base, uno.t)
+        mismatches += (fw.dc_mode != inf.dc_mode or abs(fw.dc_target - inf.dc_target) > 1.0)
+    assert fw.source == "firmware" and inf.source == "inferred"
+    assert mismatches <= 0.02 * 800, mismatches
