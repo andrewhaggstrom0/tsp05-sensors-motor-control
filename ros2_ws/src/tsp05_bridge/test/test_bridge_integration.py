@@ -139,8 +139,15 @@ def test_gui_commands_move_motors(env):
     h.send("dc_move_deg", Float32, 90.0)
     assert h.wait(lambda: abs(h.last["dc/deg"] - start - 90.0) <= 2.0 and h.last["dc/rpm"] == 0.0, 5.0)
 
+    # Speed comes from 2 deg encoder steps through an EMA, so single readings scatter
+    # by a few rpm (about +-2 at 30 rpm on hardware). Check the mean over 1 s.
     h.send("dc_rpm", Float32, -50.0)
-    assert h.wait(lambda: abs(h.last["dc/rpm"] + 50.0) < 1.0)
+    assert h.wait(lambda: abs(h.last["dc/rpm"] + 50.0) < 10.0)
+    samples = []
+    for _ in range(20):
+        h.spin(0.05)
+        samples.append(h.last["dc/rpm"])
+    assert sum(samples) / len(samples) == pytest.approx(-50.0, abs=3.0), samples
     h.send("dc_stop", Empty)
     assert h.wait(lambda: h.last["dc/rpm"] == 0.0 and h.last["dc/pwm"] == 0.0)
 
@@ -154,8 +161,13 @@ def test_mode_switch_and_sensor_mode_ignores_motor_commands(env):
     assert h.wait(lambda: h.last.get("mode") == 0)
     h.send("mode", Int8, 1)
     assert h.wait(lambda: h.last.get("mode") == 1)
+    # The firmware ignores motor commands in SENSOR mode without replying.
     h.send("servo_deg", Float32, 170.0)
-    assert h.wait(lambda: any("ignored in SENSOR mode" in m for m in h.logs)), h.logs
+    assert not h.wait(lambda: h.last["servo/deg"] == 170.0, 1.0), "servo obeyed S in SENSOR mode"
+    h.send("mode", Int8, 0)
+    assert h.wait(lambda: h.last.get("mode") == 0)
+    h.send("servo_deg", Float32, 170.0)
+    assert h.wait(lambda: h.last["servo/deg"] == 170.0), "servo ignored S in GUI mode"
 
 
 def test_non_finite_command_rejected_without_crash(env):
