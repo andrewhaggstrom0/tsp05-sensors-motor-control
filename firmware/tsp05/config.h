@@ -90,8 +90,6 @@
 #define MAPPING_PERIOD_MS     20       // SENSOR-mode mappings, 50 Hz
 
 // ---------- SENSOR-mode mappings (Track 2; agree with team before changing) ----------
-#define MAP_TOF_MIN_MM        50       // at/below -> MAP_SERVO_MIN_DEG
-#define MAP_TOF_MAX_MM        400      // at/above -> MAP_SERVO_MAX_DEG
 #define MAP_SERVO_MIN_DEG     0.0f
 #define MAP_SERVO_MAX_DEG     180.0f
 #define MAP_FLEX_DEADZONE_DEG 10.0f    // bend below this -> 0 rpm
