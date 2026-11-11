@@ -34,7 +34,7 @@ def test_fields_match_protocol_md():
 # ---------------------------------------------------------------- telemetry
 def test_parse_good_line():
     t = p.parse_telemetry(GOOD)
-    assert list(t) == list(p.TELEMETRY_FIELDS)
+    assert list(t) == list(p.TELEMETRY_FIELDS_BASE)        # older firmware: base fields only
     assert t["ms"] == 2004 and t["mode"] == 0 and t["flex_raw"] == 425
     assert t["temp_C"] == pytest.approx(23.9)
     assert t["servo_deg"] == 90.0 and t["interlock"] == 0

@@ -28,7 +28,7 @@ from rclpy.node import Node
 from std_msgs.msg import Bool, Empty, Float32, Int8, String
 
 from tsp05_bridge import protocol as p
-from tsp05_bridge.topics import COMMAND_TOPICS, FLAG_TOPICS, FLOAT_TOPICS, NS
+from tsp05_bridge.topics import COMMAND_TOPICS, EXTRA_TOPICS, FLAG_TOPICS, FLOAT_TOPICS, NS
 
 try:
     import serial  # pyserial
@@ -37,7 +37,11 @@ except ImportError:  # pragma: no cover - reported at startup
 
 # mode is std_msgs/Int8 and interlock std_msgs/Bool; every other field is Float32
 SPECIAL_TOPICS = {"mode": (FLAG_TOPICS["mode"], Int8), "interlock": (FLAG_TOPICS["interlock"], Bool)}
-assert set(FLOAT_TOPICS) | set(SPECIAL_TOPICS) == set(p.TELEMETRY_FIELDS)
+# Appended fields (newer firmware): publishers are created on the first line that
+# carries them, so with older firmware these topics do not exist at all.
+EXTRA_TYPES = {"dc_mode": Int8, "dc_target": Float32, "dc_arrived": Bool, "tof_fault": Bool}
+assert set(FLOAT_TOPICS) | set(SPECIAL_TOPICS) == set(p.TELEMETRY_FIELDS_BASE)
+assert set(EXTRA_TOPICS) == set(EXTRA_TYPES) == set(p.TELEMETRY_FIELDS_EXTRA)
 
 
 class BridgeNode(Node):
@@ -138,10 +142,16 @@ class BridgeNode(Node):
             self._last_bad = f"{e} | {line[:60]!r}"
             return
         self._n_lines += 1
+        if "dc_mode" in t and "dc_mode" not in self._pubs:
+            for field, topic in EXTRA_TOPICS.items():
+                self._pubs[field] = self.create_publisher(EXTRA_TYPES[field], f"{NS}/{topic}", 10)
+            self.get_logger().info("firmware sends the appended fields: publishing "
+                                   + ", ".join(f"{NS}/{t}" for t in EXTRA_TOPICS.values()))
         for field, value in t.items():
-            if field == "mode":
+            msg_type = SPECIAL_TOPICS[field][1] if field in SPECIAL_TOPICS else EXTRA_TYPES.get(field, Float32)
+            if msg_type is Int8:
                 self._pubs[field].publish(Int8(data=int(value)))
-            elif field == "interlock":
+            elif msg_type is Bool:
                 self._pubs[field].publish(Bool(data=bool(value)))
             else:
                 self._pubs[field].publish(Float32(data=value))

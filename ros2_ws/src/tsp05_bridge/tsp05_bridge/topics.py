@@ -24,6 +24,10 @@ FLOAT_TOPICS = {
 }
 # telemetry field -> topic with its own type: mode is std_msgs/Int8, interlock std_msgs/Bool
 FLAG_TOPICS = {"mode": "mode", "interlock": "interlock"}
+# appended telemetry fields (newer firmware only); published once a line carries them.
+# dc/mode is std_msgs/Int8, dc/target Float32, dc/arrived and tof/fault Bool.
+EXTRA_TOPICS = {"dc_mode": "dc/mode", "dc_target": "dc/target",
+                "dc_arrived": "dc/arrived", "tof_fault": "tof/fault"}
 # published by the bridge itself: std_msgs/Bool, std_msgs/String
 STATUS_TOPICS = ("bridge/connected", "log")
 # subscribed: GUI -> Uno
