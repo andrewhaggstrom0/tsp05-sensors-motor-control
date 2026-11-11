@@ -98,7 +98,7 @@
 #define MAP_SLOT_JOG_DEG      15.0f    // stepper jog per slot event
 
 // ---------- Thermal interlock (Track 2) ----------
-#define INTERLOCK_TEMP_C      30.0f    // above this (or thermistor fault) -> DC stops
+#define INTERLOCK_TEMP_C      29.0f    // above this (or thermistor fault) -> DC stops
 // ---------- DC motor: control (Track 1) ----------
 #define DC_PERIOD_MS          10
 #define DC_COUNTS_PER_REV     180.0f   // measured: 10 turns = 1799 counts (3 pulses x 2 edges x 30:1)

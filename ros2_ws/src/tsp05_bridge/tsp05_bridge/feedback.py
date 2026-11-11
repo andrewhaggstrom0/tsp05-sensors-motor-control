@@ -57,7 +57,7 @@ class FeedbackConfig:
     flex_adc_short: float = 1018.0     # FLEX_ADC_SHORT: at/above = flex fault
     stepper_steps_per_rev: float = 1600.0  # STEPPER_STEPS_PER_REV
     tof_stale_ms: float = 500.0        # TOF_STALE_MS
-    interlock_temp_c: float = 30.0     # INTERLOCK_TEMP_C
+    interlock_temp_c: float = 29.0     # INTERLOCK_TEMP_C
     # bridge-only
     settle_lines: int = 5              # 5 lines = 250 ms at 20 Hz
     cmd_timeout_s: float = 1.0

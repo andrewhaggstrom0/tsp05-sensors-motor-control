@@ -243,7 +243,7 @@ def test_feedback_reports_ignored_commands_and_health(env):
     assert h.wait(lambda: "P,90.0: ignored (SENSOR mode)" in h.status), h.status
     assert h.wait(lambda: 17.0 <= h.last.get("bridge/rate_hz", 0) <= 23.0, 4.0), h.last.get("bridge/rate_hz")
     assert h.last["bridge/line_age_ms"] < 200
-    assert h.last["interlock/threshold_c"] == 30.0
+    assert h.last["interlock/threshold_c"] == 29.0
 
 
 def test_feedback_tof_fault_follows_the_hand(env):
