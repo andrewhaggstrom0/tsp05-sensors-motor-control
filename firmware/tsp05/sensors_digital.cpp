@@ -3,6 +3,7 @@
 #include <SparkFun_VL53L1X.h>
 #include "config.h"
 #include "sensors_digital.h"
+#include "tof_gesture.h"
 
 // ---------------------------------------------------------------------------
 // TOF: ranging runs continuously inside the sensor. Every TOF_POLL_MS we ask
@@ -71,6 +72,14 @@ static void tofAddSample(int mm) {
   s_filtSeeded = true;
 }
 
+// Ranges alternate between the left and right halves of the view (tof_gesture), so
+// every reading also feeds the swipe detector. The filter still gets every valid
+// reading: for one target both halves measure about the same distance.
+static const uint8_t      ZONE_CENTER[2] = {GESTURE_CENTER_A, GESTURE_CENTER_B};
+static tof_gesture::Zone  s_zone  = tof_gesture::LEFT;
+static tof_gesture::Detector s_swipeDet;
+static int8_t             s_swipe = 0;
+
 static void tofUpdate(uint32_t now) {
   if (!s_tofPresent) return;
   if ((uint32_t)(now - s_lastPollMs) < TOF_POLL_MS) return;
@@ -79,7 +88,12 @@ static void tofUpdate(uint32_t now) {
   if (!s_tof.checkForDataReady()) return;   // nothing new: don't wait
   uint16_t mm     = s_tof.getDistance();
   uint8_t  status = s_tof.getRangeStatus();
+  tof_gesture::Zone measured = s_zone;
+  s_zone = (s_zone == tof_gesture::LEFT) ? tof_gesture::RIGHT : tof_gesture::LEFT;
+  s_tof.setROI(GESTURE_ROI_W, GESTURE_ROI_H, ZONE_CENTER[s_zone]);
   s_tof.clearInterrupt();                   // arm the next range
+  tof_gesture::Swipe sw = tof_gesture::update(s_swipeDet, measured, mm, status == 0, now);
+  if (sw != tof_gesture::NONE) s_swipe = (int8_t)sw;
   if (status != 0) return;                  // 1 signal fail, 2 sigma fail, 7 wrapped: skip
   s_lastValidMs = now;
   tofAddSample((int)mm);
@@ -157,6 +171,10 @@ void digitalSensorsInit() {
   s_tof.setDistanceModeShort();              // ~1.3 m, better in ambient light
   s_tof.setTimingBudgetInMs(TOF_TIMING_BUDGET_MS);
   s_tof.setIntermeasurementPeriod(TOF_PERIOD_MS);
+  s_zone = tof_gesture::LEFT;
+  s_tof.setROI(GESTURE_ROI_W, GESTURE_ROI_H, ZONE_CENTER[s_zone]);
+  tof_gesture::reset(s_swipeDet);
+  s_swipe = 0;
   s_tof.startRanging();
   s_tofPresent = true;
   s_lastPollMs = millis();
@@ -174,6 +192,7 @@ bool  tofFault() {
   return !s_tofPresent || !s_filtSeeded ||
          (uint32_t)(millis() - s_lastValidMs) > TOF_STALE_MS;
 }
+int   tofTakeSwipe() { int s = s_swipe; s_swipe = 0; return s; }
 
 long slotCount() {
   noInterrupts();

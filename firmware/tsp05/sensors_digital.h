@@ -12,6 +12,7 @@ void  digitalSensorsUpdate();
 int   tofRawMm();          // latest valid range, mm (holds the last valid value)
 float tofFiltMm();         // filtered range, mm: median of TOF_MEDIAN_N, then EMA
 bool  tofFault();          // true if the sensor is missing or no valid range for TOF_STALE_MS
+int   tofTakeSwipe();      // swipe since the last call: +1 left-to-right, -1 right-to-left, 0 none
 
 // Slot sensor
 long  slotCount();         // total beam-break events since boot

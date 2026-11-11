@@ -28,6 +28,7 @@ static bool     g_interlock = false;
 // Mode
 // ===========================================================================
 static float g_lastMapRpm = 0.0f;
+static int8_t g_sweepDir  = 0;     // servo sweep after a TOF swipe: +1 toward 180, -1 toward 0
 static bool  g_mapRpmSent = false;
 
 static void setMode(uint8_t m) {
@@ -36,6 +37,8 @@ static void setMode(uint8_t m) {
   dcStop();                 // either way, start the new mode from a stopped DC motor
   g_mapRpmSent = false;     // SENSOR mode re-sends its first RPM
   slotTakeEvents();         // drop slot events from before the switch
+  tofTakeSwipe();           // and swipes
+  g_sweepDir = 0;
 }
 
 // ===========================================================================
@@ -95,10 +98,17 @@ static void readCommands() {
 static float clampf(float x, float lo, float hi) { return x < lo ? lo : (x > hi ? hi : x); }
 
 static void runSensorMappings() {
-  // TOF distance -> servo angle
-  float mm = clampf(tofFiltMm(), MAP_TOF_MIN_MM, MAP_TOF_MAX_MM);
-  float t  = (mm - MAP_TOF_MIN_MM) / (float)(MAP_TOF_MAX_MM - MAP_TOF_MIN_MM);
-  servoSetDeg(MAP_SERVO_MIN_DEG + t * (MAP_SERVO_MAX_DEG - MAP_SERVO_MIN_DEG));
+  // TOF swipe -> servo sweep: right-to-left sweeps toward MAP_SERVO_MAX_DEG,
+  // left-to-right toward MAP_SERVO_MIN_DEG, at GESTURE_SERVO_DEG_S until the end
+  // of travel or the next swipe.
+  int swipe = tofTakeSwipe();
+  if (swipe != 0) g_sweepDir = (swipe < 0) ? +1 : -1;
+  if (g_sweepDir != 0) {
+    float deg = servoDeg() + g_sweepDir * GESTURE_SERVO_DEG_S * MAPPING_PERIOD_MS / 1000.0f;
+    if (deg >= MAP_SERVO_MAX_DEG) { deg = MAP_SERVO_MAX_DEG; g_sweepDir = 0; }
+    if (deg <= MAP_SERVO_MIN_DEG) { deg = MAP_SERVO_MIN_DEG; g_sweepDir = 0; }
+    servoSetDeg(deg);
+  }
 
   // Flex bend angle -> DC RPM, with a dead zone. A flex fault means 0 rpm.
   // Only send when it actually changes.
@@ -234,7 +244,7 @@ void loop() {
   if ((uint32_t)(now - g_lastMapMs) >= MAPPING_PERIOD_MS) {
     g_lastMapMs = now;
     if (g_mode == MODE_SENSOR) runSensorMappings();
-    else slotTakeEvents();   // GUI mode: discard slot events so none pile up
+    else { slotTakeEvents(); tofTakeSwipe(); }   // GUI mode: discard events so none pile up
   }
 
   // Telemetry at 20 Hz; a new line starts only when the last one has gone out
