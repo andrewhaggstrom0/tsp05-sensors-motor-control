@@ -81,3 +81,13 @@ float dcDeg() { return degFromCounts(readCount()); }
 float dcRpm() { return ctrl.rpm; }
 int   dcPwm() { return pwmOut; }
 bool  dcArrived() { return ctrl.mode == POSITION && ctrl.arrived; }
+
+// The numbers are the telemetry dc_mode values in docs/protocol.md.
+static_assert(IDLE == 0 && VELOCITY == 1 && POSITION == 2, "dc_mode values changed: update docs/protocol.md");
+int   dcMode() { return (int)ctrl.mode; }
+
+float dcTarget() {
+  if (ctrl.mode == POSITION) return degFromCounts(ctrl.targetCounts);
+  if (ctrl.mode == VELOCITY) return ctrl.targetRpm;
+  return 0.0f;
+}

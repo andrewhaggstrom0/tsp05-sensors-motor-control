@@ -12,3 +12,5 @@ float dcDeg();
 float dcRpm();
 int   dcPwm();                     // -255..255
 bool  dcArrived();                 // position mode: within DC_POS_TOL_DEG of target
+int   dcMode();                    // 0 idle, 1 velocity, 2 position (telemetry dc_mode)
+float dcTarget();                  // position mode: target deg; velocity mode: target rpm; idle: 0
