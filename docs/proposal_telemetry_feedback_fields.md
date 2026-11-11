@@ -1,7 +1,7 @@
 # Proposal: DC and TOF feedback fields in the telemetry line (prototype, parked)
 
-Status: **prototype on branch `proto/telemetry-feedback-fields`, not merged, not
-tested on hardware.** Firmware files touched here belong to Track 1 (`dc_motor`),
+Status: **in PR #15 (with the bridge and GUI feedback), tested on the Uno
+2026-11-11, not merged.** Firmware files touched here belong to Track 1 (`dc_motor`),
 Track 2 (`tsp05.ino`, `docs/protocol.md`) and Track 3 (`tofFault()`); nothing merges
 without their agreement. Track 5 (Raoul Bouri) wrote it to show the change end to
 end.
@@ -80,24 +80,31 @@ Per file:
    separately. Not reachable at the fake's normal 10 ms step.
 4. **The memory baseline in the original brief was stale.** `main` is now 60% RAM /
    67% flash (after the TOF swipe PR #10), not 58% / 64%.
-5. **Not tested on hardware.** Uploading from the Mac failed: the Uno's bootloader
-   syncs and reads the chip signature, then the first 128-byte page write is never
-   acknowledged. Same on two different Uno R3 boards through the USB hub, with
-   avrdude 8.0 and 6.3, so it is the laptop's USB path, not the boards. Reading
-   telemetry and sending commands over the same link work (20 Hz, 0 malformed).
-   The first failed upload left the original Uno with a partial program; the team
-   firmware must be re-flashed from another computer.
+5. **Uploading from the Mac through its USB hub fails** (the bootloader syncs, then
+   the first 128-byte page write is never acknowledged; two Uno R3 boards, avrdude
+   8.0 and 6.3). The prototype was flashed another way on 2026-11-11.
+
+## Hardware results (2026-11-11, prototype firmware on the Uno)
+- Raw serial: `# TSP05 starting`, then 23-field lines every 50 ms.
+- `D,P,90` from 0 deg: `dc_mode` 2, `dc_target` 90.0; `dc_arrived` 1 at 0.26 s at
+  94 deg (overshoot), then 1 -> 0 -> 1, ending at 90.0 deg; `D,X`: `dc_mode` 0,
+  `dc_target` 0.0. Matches the prediction from Deevi's p90 recording.
+- Through the bridge (PR #15) and Foxglove: 20.0 Hz, 0 malformed after the first
+  window (one line cut by the reset when the port opens); `dc/settled` after
+  0.75 s at 90.0 deg; every GUI command (DC +-90/+360, 30 rpm, STOP, stepper +45,
+  servo 0/90/180, GUI/SENSOR) reported `applied` in 14-90 ms.
+- `tof_fault`: 1 with `tof_raw_mm` 0 while the TOF produced no valid ranges, and 0
+  once it did after the sensors were powered. The 0 -> 1 timing after a hand leaves
+  is still to be measured.
+- Not yet checked: the thermistor interlock (pinch above 30 C) and the flex sensor
+  (reads -30 deg, Track 4).
 
 ## To finish (if the team agrees)
 1. Agree field names, order and units with Track 2 (protocol), Track 1 (DC getters,
    and whether to latch `dc_arrived`) and Track 3 (`tof_fault`).
-2. Flash from a machine that uploads reliably and check: 20 Hz, 0 malformed; a
-   `D,P,90` gives `dc_target` = start + 90 and `dc_arrived` 0 -> 1; `tof_fault` goes
-   1 about 0.5 s after the hand leaves and 0 while ranging. Then re-flash `main`.
-3. Rebase onto `main`. The bridge on `main` (PR A: bridge feedback) already publishes
-   `/tsp05/dc/mode`, `dc/target`, `dc/arrived` and `tof/fault`, worked out from the
-   commands and the 19-field telemetry; with these fields it would take them from
-   the firmware instead, and the GUI would not change.
+2. Measure the `tof_fault` 0 -> 1 timing with a hand, and the interlock.
+3. Review PR #15. Its bridge takes these fields from the line when present and works
+   them out otherwise, so firmware and bridge can be updated in either order.
 
 ## Draft message to Yashasvi, Harish and Deevi
 > Hi all, I prototyped sending four values the firmware already computes, so the GUI
