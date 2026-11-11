@@ -1,32 +1,46 @@
 #!/usr/bin/env python3
-"""Fake TSP05 Uno for Track 5: a virtual serial port that speaks docs/protocol.md.
+"""Fake TSP05 Uno for Track 5: a virtual serial port that behaves like firmware/tsp05.
 
-Lets the ROS 2 bridge and the Foxglove GUI be built and tested before the
-integrated firmware exists. Other tracks can use it to check their parsing too.
+Lets the ROS 2 bridge and the Foxglove GUI be built and tested without hardware,
+and predicts what the real board will do. Other tracks can use it too.
 
-What it does:
-  * opens a pseudo-terminal (pty) and prints its path; the bridge opens that
-    path exactly as it would open /dev/ttyACM0
-  * sends one telemetry line at 20 Hz, fields in the exact protocol.md order:
-      T,ms,mode,flex_raw,flex_deg,flex_filt_deg,tof_raw_mm,tof_filt_mm,th_raw,
-      temp_C,slot_count,slot_rpm,servo_deg,dc_deg,dc_rpm,dc_pwm,step_deg,
-      step_target_deg,interlock
-  * simulates the sensors (smooth waves + noise) and the motors (servo slew,
-    first-order DC motor with a position loop, stepper in 0.225 deg steps)
-  * obeys every protocol command: M,0/1  S,<deg>  D,P,<deg>  D,V,<rpm>  D,X
-    P,<deg>. Motor commands are ignored in SENSOR mode, as the protocol says.
-  * SENSOR mode mapping: TOF -> servo, flex -> DC RPM, slot event -> stepper jog
-  * thermal interlock: temp above INTERLOCK_ON_C stops the DC motor in both modes
+It mirrors the firmware on main, not an idealised device:
+  * every constant comes from firmware/tsp05/config.h (and the DC speed map from
+    dc_control.cpp), so changing a value there changes the fake too
+  * the telemetry line has the exact protocol.md fields and the firmware's
+    number formats (temp_C and stepper angles with 2 decimals, the rest with 1)
+  * commands are parsed like tsp05.ino: atof/atoi semantics, 31-char lines,
+    and motor commands are ignored *silently* in SENSOR mode
+  * servo: telemetry reports the commanded angle (servoDeg() is the command)
+  * stepper: P adds to the target; the motor steps there at STEPPER_STEP_US per step
+  * DC: D,P moves relative to the current measured position; the encoder has
+    DC_COUNTS_PER_REV counts (2 deg steps); speed is an EMA of count differences;
+    inside DC_POS_TOL_DEG it coasts and counts as arrived; PWM comes from the
+    measured speed map; D,P / D,V are ignored while the interlock is active
+  * interlock: thermistor fault or temp_C > INTERLOCK_TEMP_C, no hysteresis; when
+    it trips the DC motor stops and stays stopped after it clears
+  * mode switch (M or the button) stops the DC motor and drops pending slot events
+    and swipes; the servo stays where it is
+  * SENSOR mode: a TOF swipe sweeps the servo at GESTURE_SERVO_DEG_S to the end of
+    travel (right-to-left toward MAP_SERVO_MAX_DEG); flex bend past the dead zone
+    sets the DC rpm, re-sent only when it changes by 0.5 rpm; each slot event jogs
+    the stepper MAP_SLOT_JOG_DEG
+  * TOF: raw and filtered (median of TOF_MEDIAN_N, then EMA) update only on valid
+    ranges, so with no hand in view both freeze at their last value, like hardware
+  * slot: SLOT_TABS tabs per revolution, rpm from the time across one revolution,
+    recomputed every SLOT_RPM_PERIOD_MS, 0 after SLOT_TIMEOUT_MS without an event
 
-Raw ADC counts come from tools/analog_model.py (which reads firmware/tsp05/
-config.h), so flex_raw/th_raw are consistent with the real conversions.
+Simulated world (the only parts not taken from the firmware): a hand swipes past
+the TOF twice every 10 s (right-to-left at 2 s, left-to-right at 6 s), the flex
+is bent slowly 0-90 deg, the slot disc spins at 30 rpm for 10 s out of every 20,
+and with --temp cycle the thermistor is pinched above the interlock every 40 s.
 
 Examples:
   python3 tools/fake_arduino.py                       # prints the pty path
   python3 tools/fake_arduino.py --link /tmp/tsp05     # also a stable symlink
   python3 tools/fake_arduino.py --print               # echo lines to stdout
   python3 tools/fake_arduino.py --bad-rate 0.05       # 5 % malformed lines
-  python3 tools/fake_arduino.py --temp room           # never trips interlock
+  python3 tools/fake_arduino.py --temp room           # never trips the interlock
 
 Standard library only. Works on Linux, macOS, and in the docker/ container.
 """
@@ -36,239 +50,459 @@ import argparse
 import math
 import os
 import random
+import re
 import select
 import signal
 import sys
 import time
 import tty
-from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-import analog_model as am  # noqa: E402
+import analog_model as am  # noqa: E402  (parses firmware/tsp05/config.h)
 
-TELEMETRY_HZ = 20
-SIM_HZ = 100
+FIRMWARE = am.REPO / "firmware" / "tsp05"
 
-# Mirrors of firmware behaviour. The real values will live in config.h
-# (Track 2); keep these in step if they change.
-SERVO_MIN_DEG, SERVO_MAX_DEG = 0.0, 180.0
-SERVO_SLEW_DEG_S = 300.0          # HS-311 is ~0.19 s / 60 deg unloaded
-DC_MAX_RPM = 120.0                # SPG30 output shaft at 12 V (approx.)
-DC_TAU_S = 0.15                   # first-order velocity time constant
-DC_DEADBAND_PWM = 40              # PWM added to any non-zero output
-DC_POS_KP = 2.0                   # RPM per degree of position error
-DC_POS_MAX_RPM = 60.0
-DC_ARRIVED_DEG = 2.0
-STEPPER_DEG_PER_STEP = 360.0 / 1600   # 1/8 microstepping
-STEPPER_DEG_S = 90.0
-STEPPER_JOG_DEG = 15.0            # SENSOR mode: one slot event
-TOF_MIN_MM, TOF_MAX_MM = 50.0, 1000.0   # SENSOR mode: maps onto servo 0..180
-FLEX_MAP_MAX_DEG = 90.0                 # SENSOR mode: 0..90 deg -> 0..DC_MAX_RPM
-INTERLOCK_ON_C, INTERLOCK_OFF_C = 30.0, 28.0
-SLOT_TABS = 4
-SLOT_WINDOW_S = 0.1               # 10 Hz RPM window (Track 3)
-SLOT_TIMEOUT_S = 2.0
+
+def cfg(name: str) -> float:
+    """A numeric #define from firmware/tsp05/config.h; fail loudly if it was renamed."""
+    if name not in am.C:
+        raise KeyError(f"{name} is not defined in firmware/tsp05/config.h; update tools/fake_arduino.py")
+    return am.C[name]
+
+
+# ---------------------------------------------------------------- firmware constants
+TELEMETRY_PERIOD_S = cfg("TELEMETRY_PERIOD_MS") / 1000
+MAPPING_PERIOD_S = cfg("MAPPING_PERIOD_MS") / 1000
+ANALOG_PERIOD_S = cfg("ANALOG_PERIOD_MS") / 1000
+SERVO_START_DEG = cfg("SERVO_START_DEG")
+STEPS_PER_REV = int(cfg("STEPPER_STEPS_PER_REV"))
+STEP_PERIOD_S = cfg("STEPPER_STEP_US") / 1e6
+MAP_SERVO_MIN_DEG = cfg("MAP_SERVO_MIN_DEG")
+MAP_SERVO_MAX_DEG = cfg("MAP_SERVO_MAX_DEG")
+MAP_FLEX_DEADZONE_DEG = cfg("MAP_FLEX_DEADZONE_DEG")
+MAP_FLEX_FULL_DEG = cfg("MAP_FLEX_FULL_DEG")
+MAP_DC_MAX_RPM = cfg("MAP_DC_MAX_RPM")
+MAP_SLOT_JOG_DEG = cfg("MAP_SLOT_JOG_DEG")
+INTERLOCK_TEMP_C = cfg("INTERLOCK_TEMP_C")
+DC_PERIOD_S = cfg("DC_PERIOD_MS") / 1000
+DC_COUNTS_PER_REV = cfg("DC_COUNTS_PER_REV")
+DC_MAX_RPM = cfg("DC_MAX_RPM")
+DC_RPM_EMA_ALPHA = cfg("DC_RPM_EMA_ALPHA")
+DC_POS_TOL_DEG = cfg("DC_POS_TOL_DEG")
+DC_POS_MAX_PWM = cfg("DC_POS_MAX_PWM")
+DC_POS_KP = cfg("DC_POS_KP")                 # PWM per degree of error
+DC_DEADBAND_RUN_PWM = cfg("DC_DEADBAND_RUN_PWM")
+TOF_PERIOD_S = cfg("TOF_PERIOD_MS") / 1000
+TOF_MEDIAN_N = int(cfg("TOF_MEDIAN_N"))
+TOF_EMA_ALPHA = cfg("TOF_EMA_ALPHA")
+GESTURE_NEAR_MM = cfg("GESTURE_NEAR_MM")
+GESTURE_CLEAR_S = cfg("GESTURE_CLEAR_MS") / 1000
+GESTURE_SERVO_DEG_S = cfg("GESTURE_SERVO_DEG_S")
+SLOT_TABS = int(cfg("SLOT_TABS"))
+SLOT_RPM_PERIOD_S = cfg("SLOT_RPM_PERIOD_MS") / 1000
+SLOT_TIMEOUT_S = cfg("SLOT_TIMEOUT_MS") / 1000
+
+# Measured DC speed map (PWM -> counts/s), the firmware's feedforward table.
+_DC_SRC = FIRMWARE / "dc_control.cpp"
+FF_PWM = am._parse_float_array(_DC_SRC, "FF_PWM")
+FF_CPS_FWD = am._parse_float_array(_DC_SRC, "FF_CPS_FWD")
+FF_CPS_REV = am._parse_float_array(_DC_SRC, "FF_CPS_REV")
+
+RX_MAX = 31          # tsp05.ino: char g_rx[32]; longer lines are discarded
+SIM_DT = 0.01        # simulation step (s); matches the DC control period
+
+# ---------------------------------------------------------------- plant assumptions
+# Not in the firmware: how the physical parts respond. Chosen to match bench results
+# calibration/data/dc_step_p90_filtD01.csv (90 deg step: in band 0.22 s, stopped
+# 0.60 s, peak 84 rpm, peak PWM 224) and 30 rpm holding at about 30 +- 2 rpm.
+DC_TAU_S = 0.12                     # motor speed time constant while driven
+DC_COAST_TAU_S = 0.05               # unpowered: gearbox friction stops it quickly
+TOF_HAND_MM = 250                   # distance of the swiping hand
+TOF_NOISE_MM = 2.0                  # Harish measured 2.1 mm raw noise
+DISC_RPM = 30.0
 
 
 def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
 
-@dataclass
-class State:
-    mode: int = 0                      # 0 GUI, 1 SENSOR
-    # sensors
-    flex_raw: int = 0
-    flex_deg: float = 0.0
-    flex_filt_deg: float = 0.0
-    tof_raw_mm: float = 0.0
-    tof_filt_mm: float = 0.0
-    th_raw: int = 0
-    temp_c: float = 0.0
-    slot_count: int = 0
-    slot_rpm: float = 0.0
-    # actuators
-    servo_cmd_deg: float = 90.0
-    servo_deg: float = 90.0
-    dc_mode: str = "stop"              # stop | vel | pos
-    dc_target_rpm: float = 0.0
-    dc_target_deg: float = 0.0
-    dc_deg: float = 0.0
-    dc_rpm: float = 0.0
-    dc_pwm: int = 0
-    step_pos: int = 0                  # steps
-    step_target: int = 0               # steps
-    interlock: bool = False
-    # bookkeeping
-    tof_hist: list = field(default_factory=list)
-    slot_times: list = field(default_factory=list)
-    slot_events_pending: int = 0
-    slot_phase: float = 0.0
+def feedforward_pwm(rpm: float) -> float:
+    """dc_control.cpp feedforwardPwm(): PWM that holds this speed (measured map)."""
+    if rpm == 0.0:
+        return 0.0
+    cps_table = FF_CPS_FWD if rpm > 0 else FF_CPS_REV
+    want = abs(rpm) * DC_COUNTS_PER_REV / 60.0
+    pwm = FF_PWM[-1]
+    for i in range(1, len(FF_PWM)):
+        if want <= cps_table[i]:
+            pwm = FF_PWM[i - 1] + (FF_PWM[i] - FF_PWM[i - 1]) * (want - cps_table[i - 1]) / (cps_table[i] - cps_table[i - 1])
+            break
+    return pwm if rpm > 0 else -pwm
+
+
+def deadband_comp(u: float, deadband: float) -> int:
+    """dc_control.cpp deadbandComp(): any non-zero command becomes +/-(deadband..255)."""
+    u = clamp(u, -255.0, 255.0)
+    if abs(u) < 0.5:
+        return 0
+    mag = int(round(deadband + abs(u) * (255 - deadband) / 255.0))
+    return mag if u > 0 else -mag
+
+
+def rpm_from_pwm(pwm: float) -> float:
+    """Steady speed at this PWM: the measured speed map, inverted (plant model)."""
+    if pwm == 0:
+        return 0.0
+    cps_table = FF_CPS_FWD if pwm > 0 else FF_CPS_REV
+    p = abs(pwm)
+    if p <= FF_PWM[0]:
+        return 0.0
+    cps = cps_table[-1]
+    for i in range(1, len(FF_PWM)):
+        if p <= FF_PWM[i]:
+            cps = cps_table[i - 1] + (cps_table[i] - cps_table[i - 1]) * (p - FF_PWM[i - 1]) / (FF_PWM[i] - FF_PWM[i - 1])
+            break
+    rpm = cps * 60.0 / DC_COUNTS_PER_REV
+    return rpm if pwm > 0 else -rpm
+
+
+_NUM = re.compile(r"\s*[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?")
+
+
+def c_atof(text: str) -> float:
+    """C atof(): the longest numeric prefix, 0.0 if there is none."""
+    m = _NUM.match(text)
+    return float(m.group(0)) if m else 0.0
+
+
+def c_atoi(text: str) -> int:
+    m = re.match(r"\s*[+-]?\d+", text)
+    return int(m.group(0)) if m else 0
 
 
 class FakeUno:
-    def __init__(self, temp_profile: str, bad_rate: float, seed: int | None):
+    """The firmware's behaviour plus a simulated bench. Time advances only in step()."""
+
+    MODE_GUI, MODE_SENSOR = 0, 1
+
+    def __init__(self, temp_profile: str = "cycle", bad_rate: float = 0.0, seed: int | None = None):
         self.rng = random.Random(seed)
         self.temp_profile = temp_profile
         self.bad_rate = bad_rate
-        self.s = State()
-        self.t0 = time.monotonic()
+        self.t = 0.0
         self.cmd_count = 0
         self.ignored_count = 0
+        self._due: dict[str, float] = {}
 
-    # ------------------------------------------------------------- sensors
-    def _sensors(self, t: float, dt: float) -> None:
-        s, rng = self.s, self.rng
-        # Flex: slow bend 0..90 deg, quantised through the ADC like the real one
-        true_deg = 45.0 - 45.0 * math.cos(2 * math.pi * 0.08 * t)
-        adc = am.adc_from_flex_deg(true_deg) + rng.gauss(0, 3.0)
-        s.flex_raw = int(clamp(round(adc), 0, am.ADC_MAX))
-        s.flex_deg = clamp(am.flex_deg_from_adc(s.flex_raw), am.FLEX_DEG_MIN, am.FLEX_DEG_MAX)
-        s.flex_filt_deg = am.ema(s.flex_filt_deg, s.flex_deg) if t > dt else s.flex_deg
+        self.mode = self.MODE_GUI
+        self.interlock = False
+        # analog
+        self.flex_raw, self.flex_deg, self.flex_filt_deg, self.flex_fault = 0, 0.0, 0.0, False
+        self._flex_seeded = False
+        self.th_raw, self.temp_c, self.th_fault = 0, 0.0, False
+        # TOF
+        self.tof_raw_mm, self.tof_filt_mm = 0, 0.0
+        self._tof_hist: list[int] = []
+        self._tof_seeded = False
+        self._pass_dir = 0            # swipe direction of the hand pass in progress
+        self._pass_last_near = None   # time the hand was last seen
+        self._swipe = 0               # pending swipe for tofTakeSwipe()
+        # slot
+        self.slot_count = 0
+        self.slot_rpm = 0.0
+        self._slot_edges: list[float] = []
+        self._slot_pending = 0
+        self._disc_phase = 0.0
+        # servo / stepper
+        self.servo_deg = SERVO_START_DEG
+        self.step_pos = 0
+        self.step_target = 0
+        self._step_acc = 0.0
+        # DC
+        self.dc_mode = "idle"         # idle | velocity | position
+        self.dc_target_rpm = 0.0
+        self.dc_target_counts = 0
+        self.dc_arrived = True
+        self._dc_shaft_deg = 0.0      # true shaft angle
+        self._dc_speed = 0.0          # true speed, rpm
+        self._dc_counts = 0
+        self.dc_rpm = 0.0             # EMA estimate, as reported
+        self.dc_pwm = 0
+        # SENSOR-mode mapping state (tsp05.ino)
+        self._sweep_dir = 0
+        self._map_rpm_sent = False
+        self._last_map_rpm = 0.0
 
-        # TOF: hand moving 100..900 mm, sensor noise + occasional outlier;
-        # filter = median of 5 then EMA, like Track 3's plan
-        true_mm = 500.0 + 400.0 * math.sin(2 * math.pi * 0.05 * t)
-        raw = true_mm + rng.gauss(0, 8.0)
-        if rng.random() < 0.02:
-            raw += rng.choice((-1, 1)) * rng.uniform(80, 200)
-        s.tof_raw_mm = clamp(round(raw), 0, 4000)
-        s.tof_hist = (s.tof_hist + [s.tof_raw_mm])[-5:]
-        med = sorted(s.tof_hist)[len(s.tof_hist) // 2]
-        s.tof_filt_mm = med if t <= dt else s.tof_filt_mm + 0.3 * (med - s.tof_filt_mm)
+    # ------------------------------------------------------------ scheduling
+    def _every(self, name: str, period: float) -> bool:
+        due = self._due.get(name, 0.0)
+        if self.t + 1e-9 >= due:
+            self._due[name] = (due if due else self.t) + period
+            return True
+        return False
 
-        # Thermistor: room temperature; "cycle" adds a pinch every 40 s that
-        # crosses INTERLOCK_ON_C so the interlock can be seen in the GUI
-        temp = 24.0 + 0.3 * math.sin(2 * math.pi * t / 300)
-        if self.temp_profile == "cycle":
-            phase = t % 40.0
-            if 25.0 < phase < 35.0:
-                temp += 9.0 * math.sin(math.pi * (phase - 25.0) / 10.0)
-        adc = am.adc_from_therm_c(temp) + rng.gauss(0, 1.0)
-        s.th_raw = int(clamp(round(adc), 0, am.ADC_MAX))
-        s.temp_c = am.therm_c_from_adc(s.th_raw)
-
-        # Slot sensor: a disc with SLOT_TABS tabs spun by hand for 10 s,
-        # then left still for 10 s
-        disc_rpm = 30.0 if (t % 20.0) < 10.0 else 0.0
-        s.slot_phase += disc_rpm / 60.0 * SLOT_TABS * dt
-        while s.slot_phase >= 1.0:
-            s.slot_phase -= 1.0
-            s.slot_count += 1
-            s.slot_events_pending += 1
-            s.slot_times.append(t)
-        s.slot_times = [x for x in s.slot_times if t - x <= SLOT_TIMEOUT_S]
-        if len(s.slot_times) >= 2:
-            span = s.slot_times[-1] - s.slot_times[0]
-            s.slot_rpm = (len(s.slot_times) - 1) / SLOT_TABS / span * 60.0 if span > 0 else 0.0
-        else:
-            s.slot_rpm = 0.0
-
-    # ------------------------------------------------------------- motors
-    def _motors(self, dt: float) -> None:
-        s = self.s
-        # Interlock with hysteresis
-        if s.temp_c >= INTERLOCK_ON_C:
-            s.interlock = True
-        elif s.temp_c <= INTERLOCK_OFF_C:
-            s.interlock = False
-
-        if s.mode == 1:   # SENSOR mapping
-            frac = clamp((s.tof_filt_mm - TOF_MIN_MM) / (TOF_MAX_MM - TOF_MIN_MM), 0, 1)
-            s.servo_cmd_deg = SERVO_MIN_DEG + frac * (SERVO_MAX_DEG - SERVO_MIN_DEG)
-            s.dc_mode = "vel"
-            s.dc_target_rpm = clamp(s.flex_filt_deg / FLEX_MAP_MAX_DEG, 0, 1) * DC_MAX_RPM
-            if s.slot_events_pending:
-                s.step_target += round(s.slot_events_pending * STEPPER_JOG_DEG / STEPPER_DEG_PER_STEP)
-        s.slot_events_pending = 0
-
-        # Servo: slew-limited
-        step = SERVO_SLEW_DEG_S * dt
-        s.servo_deg += clamp(s.servo_cmd_deg - s.servo_deg, -step, step)
-
-        # DC motor: outer position P loop -> velocity target -> first-order plant
-        if s.interlock or s.dc_mode == "stop":
-            target_rpm = 0.0
-        elif s.dc_mode == "pos":
-            err = s.dc_target_deg - s.dc_deg
-            if abs(err) < DC_ARRIVED_DEG and abs(s.dc_rpm) < 5.0:
-                s.dc_mode, target_rpm = "stop", 0.0
+    def step(self, dt: float = SIM_DT) -> None:
+        self.t += dt
+        if self._every("analog", ANALOG_PERIOD_S):
+            self._analog()
+        if self._every("tof", TOF_PERIOD_S):
+            self._tof()
+        self._slot_disc(dt)
+        if self._every("slot_rpm", SLOT_RPM_PERIOD_S):
+            self._slot_rpm()
+        self._dc(dt)
+        self._stepper(dt)
+        self._update_interlock()
+        if self._every("mapping", MAPPING_PERIOD_S):
+            if self.mode == self.MODE_SENSOR:
+                self._sensor_mappings()
             else:
-                target_rpm = clamp(DC_POS_KP * err, -DC_POS_MAX_RPM, DC_POS_MAX_RPM)
-        else:
-            target_rpm = clamp(s.dc_target_rpm, -DC_MAX_RPM, DC_MAX_RPM)
-        s.dc_rpm += (target_rpm - s.dc_rpm) * min(1.0, dt / DC_TAU_S)
-        if abs(target_rpm) < 1e-6 and abs(s.dc_rpm) < 0.5:
-            s.dc_rpm = 0.0
-        s.dc_deg += s.dc_rpm * 6.0 * dt          # RPM -> deg/s
-        if target_rpm == 0.0:
-            s.dc_pwm = 0
-        else:
-            pwm = target_rpm / DC_MAX_RPM * (255 - DC_DEADBAND_PWM)
-            s.dc_pwm = int(round(pwm + math.copysign(DC_DEADBAND_PWM, pwm)))
+                self._take_slot_events()
+                self._take_swipe()
 
-        # Stepper: constant speed toward the target, whole steps only
-        max_steps = max(1, int(STEPPER_DEG_S / STEPPER_DEG_PER_STEP * dt))
-        diff = s.step_target - s.step_pos
-        s.step_pos += int(clamp(diff, -max_steps, max_steps))
+    # ------------------------------------------------------------ simulated sensors
+    def _analog(self) -> None:
+        rng = self.rng
+        true_deg = 45.0 - 45.0 * math.cos(2 * math.pi * 0.08 * self.t)
+        self.flex_raw = int(clamp(round(am.adc_from_flex_deg(true_deg) + rng.gauss(0, 3.0)), 0, am.ADC_MAX))
+        self.flex_fault = am.flex_adc_is_fault(self.flex_raw)
+        self.flex_deg = clamp(am.flex_deg_from_adc(self.flex_raw), am.FLEX_DEG_MIN, am.FLEX_DEG_MAX)
+        self.flex_filt_deg = am.ema(self.flex_filt_deg, self.flex_deg) if self._flex_seeded else self.flex_deg
+        self._flex_seeded = True
 
-    def step(self, dt: float) -> None:
-        t = time.monotonic() - self.t0
-        self._sensors(t, dt)
-        self._motors(dt)
+        temp = 22.0 + 0.3 * math.sin(2 * math.pi * self.t / 300)
+        if self.temp_profile == "cycle":
+            phase = self.t % 40.0
+            if 25.0 < phase < 35.0:
+                temp += 11.0 * math.sin(math.pi * (phase - 25.0) / 10.0)
+        self.th_raw = int(clamp(round(am.adc_from_therm_c(temp) + rng.gauss(0, 1.0)), 0, am.ADC_MAX))
+        self.th_fault = am.therm_adc_is_fault(self.th_raw)
+        self.temp_c = am.therm_c_from_adc(self.th_raw)
 
-    # ------------------------------------------------------------- protocol
-    def handle(self, line: str) -> str | None:
-        """Apply one command. Returns a '#' comment line to send back, or None."""
-        s = self.s
-        parts = line.strip().split(",")
+    def _hand(self) -> int:
+        """Swipe direction of a hand in view now (+1 left-to-right, -1 right-to-left), else 0."""
+        phase = self.t % 10.0
+        if 2.0 <= phase < 2.4:
+            return -1
+        if 6.0 <= phase < 6.4:
+            return +1
+        return 0
+
+    def _tof(self) -> None:
+        hand = self._hand()
+        if hand:
+            mm = int(round(TOF_HAND_MM + self.rng.gauss(0, TOF_NOISE_MM)))
+            if 0 < mm < GESTURE_NEAR_MM:
+                self._pass_dir = hand
+                self._pass_last_near = self.t
+            # valid range: same median + EMA as sensors_digital.cpp
+            self.tof_raw_mm = mm
+            self._tof_hist = (self._tof_hist + [mm])[-TOF_MEDIAN_N:]
+            med = sorted(self._tof_hist)[len(self._tof_hist) // 2] if len(self._tof_hist) % 2 else \
+                sum(sorted(self._tof_hist)[len(self._tof_hist) // 2 - 1:len(self._tof_hist) // 2 + 1]) / 2
+            self.tof_filt_mm = self.tof_filt_mm + TOF_EMA_ALPHA * (med - self.tof_filt_mm) if self._tof_seeded else med
+            self._tof_seeded = True
+        # no hand: every range fails (nothing in short-range view), values hold
+        if self._pass_dir and not hand and self.t - self._pass_last_near >= GESTURE_CLEAR_S:
+            self._swipe = self._pass_dir      # both zones clear long enough: report the swipe
+            self._pass_dir = 0
+
+    def _take_swipe(self) -> int:
+        s, self._swipe = self._swipe, 0
+        return s
+
+    def _slot_disc(self, dt: float) -> None:
+        rpm = DISC_RPM if (self.t % 20.0) < 10.0 else 0.0
+        self._disc_phase += rpm / 60.0 * SLOT_TABS * dt
+        while self._disc_phase >= 1.0:
+            self._disc_phase -= 1.0
+            self.slot_count += 1
+            self._slot_pending += 1
+            self._slot_edges = (self._slot_edges + [self.t])[-(SLOT_TABS + 1):]
+
+    def _slot_rpm(self) -> None:
+        """sensors_digital.cpp slotUpdate(): time across one revolution, with the
+        slowing-down bound and the timeout."""
+        e = self._slot_edges
+        if not e or self.t - e[-1] > SLOT_TIMEOUT_S:
+            self.slot_rpm = 0.0
+            if e and self.t - e[-1] > SLOT_TIMEOUT_S:
+                self._slot_edges = []          # stopped: the next spin starts fresh
+            return
+        edges = min(len(e) - 1, SLOT_TABS)
+        if edges <= 0:
+            self.slot_rpm = 0.0
+            return
+        newest, oldest, second = e[-1], e[-1 - edges], e[-edges]
+        since = self.t - newest
+        rpm = 60.0 * edges / (SLOT_TABS * (newest - oldest))
+        bound = 60.0 * edges / (SLOT_TABS * ((newest - second) + since))
+        self.slot_rpm = bound if 0 < bound < rpm else rpm
+
+    def _take_slot_events(self) -> int:
+        n, self._slot_pending = self._slot_pending, 0
+        return n
+
+    # ------------------------------------------------------------ actuators
+    def _stepper(self, dt: float) -> None:
+        if self.step_pos == self.step_target:
+            self._step_acc = 0.0
+            return
+        self._step_acc += dt
+        while self._step_acc >= STEP_PERIOD_S and self.step_pos != self.step_target:
+            self._step_acc -= STEP_PERIOD_S
+            self.step_pos += 1 if self.step_target > self.step_pos else -1
+
+    def stepper_move_relative(self, deg: float) -> None:
+        self.step_target += round(deg * STEPS_PER_REV / 360.0)
+
+    def servo_set(self, deg: float) -> None:
+        self.servo_deg = clamp(deg, 0.0, 180.0)
+
+    def dc_deg(self) -> float:
+        return self._dc_counts * 360.0 / DC_COUNTS_PER_REV
+
+    def dc_move_relative(self, deg: float) -> None:
+        if self.interlock:
+            return
+        self.dc_mode = "position"
+        self.dc_target_counts = self._dc_counts + round(deg * DC_COUNTS_PER_REV / 360.0)
+        self.dc_arrived = False
+
+    def dc_set_velocity(self, rpm: float) -> None:
+        if self.interlock:
+            return
+        self.dc_mode = "velocity"
+        self.dc_target_rpm = clamp(rpm, -DC_MAX_RPM, DC_MAX_RPM)
+
+    def dc_stop(self) -> None:
+        self.dc_mode = "idle"
+        self.dc_pwm = 0
+
+    def _dc(self, dt: float) -> None:
+        drive_rpm = 0.0
+        pwm = 0.0
+        if self.dc_mode == "velocity" and self.dc_target_rpm != 0.0:
+            drive_rpm = self.dc_target_rpm
+            pwm = feedforward_pwm(drive_rpm)
+        elif self.dc_mode == "position":
+            err_deg = (self.dc_target_counts - self._dc_counts) * 360.0 / DC_COUNTS_PER_REV
+            if abs(err_deg) <= DC_POS_TOL_DEG:
+                self.dc_arrived = True        # coast inside the band
+            else:
+                self.dc_arrived = False
+                u = clamp(DC_POS_KP * err_deg, -DC_POS_MAX_PWM, DC_POS_MAX_PWM)
+                pwm = deadband_comp(u, DC_DEADBAND_RUN_PWM)
+                drive_rpm = rpm_from_pwm(pwm)
+        if self.interlock:
+            drive_rpm, pwm = 0.0, 0.0
+        self.dc_pwm = int(round(clamp(pwm, -255, 255)))
+        # plant: first-order speed response, coasting toward 0 when not driven
+        tau = DC_TAU_S if drive_rpm != 0.0 else DC_COAST_TAU_S
+        self._dc_speed += (drive_rpm - self._dc_speed) * min(1.0, dt / tau)
+        if drive_rpm == 0.0 and abs(self._dc_speed) < 0.5:
+            self._dc_speed = 0.0
+        self._dc_shaft_deg += self._dc_speed * 6.0 * dt
+        counts = int(math.floor(self._dc_shaft_deg * DC_COUNTS_PER_REV / 360.0 + 0.5))
+        raw_rpm = (counts - self._dc_counts) / DC_COUNTS_PER_REV / dt * 60.0
+        self._dc_counts = counts
+        self.dc_rpm += DC_RPM_EMA_ALPHA * (raw_rpm - self.dc_rpm)
+
+    def _update_interlock(self) -> None:
+        want = self.th_fault or self.temp_c > INTERLOCK_TEMP_C
+        if want != self.interlock:
+            if want and not self.interlock:
+                self.dc_stop()
+            self.interlock = want
+
+    # ------------------------------------------------------------ tsp05.ino logic
+    def set_mode(self, m: int) -> None:
+        if m == self.mode:
+            return
+        self.mode = m
+        self.dc_stop()
+        self._map_rpm_sent = False
+        self._take_slot_events()
+        self._take_swipe()
+        self._sweep_dir = 0
+
+    def press_button(self) -> None:
+        self.set_mode(self.MODE_SENSOR if self.mode == self.MODE_GUI else self.MODE_GUI)
+
+    def _sensor_mappings(self) -> None:
+        swipe = self._take_swipe()
+        if swipe:
+            self._sweep_dir = +1 if swipe < 0 else -1
+        if self._sweep_dir:
+            deg = self.servo_deg + self._sweep_dir * GESTURE_SERVO_DEG_S * MAPPING_PERIOD_S
+            if deg >= MAP_SERVO_MAX_DEG:
+                deg, self._sweep_dir = MAP_SERVO_MAX_DEG, 0
+            if deg <= MAP_SERVO_MIN_DEG:
+                deg, self._sweep_dir = MAP_SERVO_MIN_DEG, 0
+            self.servo_set(deg)
+
+        bend, rpm = self.flex_filt_deg, 0.0
+        if not self.flex_fault and bend > MAP_FLEX_DEADZONE_DEG:
+            f = clamp((bend - MAP_FLEX_DEADZONE_DEG) / (MAP_FLEX_FULL_DEG - MAP_FLEX_DEADZONE_DEG), 0.0, 1.0)
+            rpm = f * MAP_DC_MAX_RPM
+        if not self._map_rpm_sent or abs(rpm - self._last_map_rpm) >= 0.5:
+            self.dc_set_velocity(rpm)
+            self._last_map_rpm = rpm
+            self._map_rpm_sent = True
+
+        ev = self._take_slot_events()
+        if ev:
+            self.stepper_move_relative(ev * MAP_SLOT_JOG_DEG)
+
+    def handle(self, line: str) -> None:
+        """One received line, parsed exactly like tsp05.ino handleCommand(). Never replies."""
+        line = line.replace("\r", "")
         self.cmd_count += 1
-        try:
-            if parts[0] == "M" and len(parts) == 2 and parts[1] in ("0", "1"):
-                s.mode = int(parts[1])
-                if s.mode == 0:            # leaving SENSOR mode: hold still
-                    s.dc_mode, s.dc_target_rpm = "stop", 0.0
-                    s.servo_cmd_deg = s.servo_deg
-                return None
-            if s.mode == 1 and parts[0] in ("S", "D", "P"):
+        if len(line) > RX_MAX or not line:
+            self.ignored_count += 1
+            return
+        if line.startswith("M,"):
+            m = c_atoi(line[2:])
+            if m in (self.MODE_GUI, self.MODE_SENSOR):
+                self.set_mode(m)
+            else:
                 self.ignored_count += 1
-                return f"# ignored in SENSOR mode: {line.strip()}"
-            if parts[0] == "S" and len(parts) == 2:
-                s.servo_cmd_deg = clamp(float(parts[1]), SERVO_MIN_DEG, SERVO_MAX_DEG)
-                return None
-            if parts[0] == "D" and len(parts) == 3 and parts[1] == "P":
-                s.dc_mode, s.dc_target_deg = "pos", s.dc_deg + float(parts[2])
-                return None
-            if parts[0] == "D" and len(parts) == 3 and parts[1] == "V":
-                s.dc_mode, s.dc_target_rpm = "vel", float(parts[2])
-                return None
-            if parts[0] == "D" and len(parts) == 2 and parts[1] == "X":
-                s.dc_mode, s.dc_target_rpm = "stop", 0.0
-                return None
-            if parts[0] == "P" and len(parts) == 2:
-                s.step_target += round(float(parts[1]) / STEPPER_DEG_PER_STEP)
-                return None
-        except ValueError:
-            pass
-        self.ignored_count += 1
-        return f"# bad command: {line.strip()}"
+            return
+        if self.mode != self.MODE_GUI:
+            self.ignored_count += 1           # motor commands ignored in SENSOR mode
+            return
+        if line.startswith("S,"):
+            self.servo_set(c_atof(line[2:]))
+        elif line.startswith("P,"):
+            self.stepper_move_relative(c_atof(line[2:]))
+        elif line.startswith("D,") and len(line) >= 3:
+            sub = line[2]
+            if sub == "X":
+                self.dc_stop()
+            elif sub == "P" and line[3:4] == ",":
+                self.dc_move_relative(c_atof(line[4:]))
+            elif sub == "V" and line[3:4] == ",":
+                self.dc_set_velocity(c_atof(line[4:]))
+            else:
+                self.ignored_count += 1
+        else:
+            self.ignored_count += 1
 
     def telemetry(self) -> str:
-        s = self.s
-        ms = int((time.monotonic() - self.t0) * 1000)
+        """buildTelemetry(): same field order and decimals as tsp05.ino."""
         fields = [
-            "T", ms, s.mode,
-            s.flex_raw, f"{s.flex_deg:.1f}", f"{s.flex_filt_deg:.1f}",
-            int(s.tof_raw_mm), int(round(s.tof_filt_mm)),
-            s.th_raw, f"{s.temp_c:.1f}",
-            s.slot_count, f"{s.slot_rpm:.1f}",
-            f"{s.servo_deg:.1f}", f"{s.dc_deg:.1f}", f"{s.dc_rpm:.1f}", s.dc_pwm,
-            f"{s.step_pos * STEPPER_DEG_PER_STEP:.3f}",
-            f"{s.step_target * STEPPER_DEG_PER_STEP:.3f}",
-            int(s.interlock),
+            "T", str(int(round(self.t * 1000))), str(self.mode),
+            str(self.flex_raw), f"{self.flex_deg:.1f}", f"{self.flex_filt_deg:.1f}",
+            str(self.tof_raw_mm), f"{self.tof_filt_mm:.1f}",
+            str(self.th_raw), f"{self.temp_c:.2f}",
+            str(self.slot_count), f"{self.slot_rpm:.1f}",
+            f"{self.servo_deg:.1f}", f"{self.dc_deg():.1f}", f"{self.dc_rpm:.1f}", str(self.dc_pwm),
+            f"{self.step_pos * 360.0 / STEPS_PER_REV:.2f}",
+            f"{self.step_target * 360.0 / STEPS_PER_REV:.2f}",
+            "1" if self.interlock else "0",
         ]
-        line = ",".join(str(f) for f in fields)
+        line = ",".join(fields)
         if self.bad_rate and self.rng.random() < self.bad_rate:
             line = self._corrupt(line)
         return line
@@ -277,12 +511,12 @@ class FakeUno:
         """Malformed lines the bridge must survive: cut lines, noise, bad numbers."""
         kind = self.rng.randrange(4)
         if kind == 0:
-            return line[: self.rng.randrange(2, len(line) - 1)]        # truncated
+            return line[: self.rng.randrange(2, len(line) - 1)]
         if kind == 1:
             return "".join(chr(self.rng.randrange(33, 127)) for _ in range(20))
         if kind == 2:
-            return line.replace(",", ",x", 1)                          # non-numeric
-        return line + ",99"                                            # extra field
+            return line.replace(",", ",x", 1)
+        return line + ",99"
 
 
 def open_pty(link: str | None) -> tuple[int, str]:
@@ -329,17 +563,16 @@ def main() -> None:
     signal.signal(signal.SIGINT, stop)
     signal.signal(signal.SIGTERM, stop)
 
-    def send(text: str) -> None:
+    def send(text: str, end: str = "\n") -> None:
         try:
-            os.write(master, (text + "\r\n").encode())   # Serial.println sends CRLF
+            os.write(master, (text + end).encode())
         except OSError:
             pass          # nobody reading yet; drop like a real Uno would
         if args.print:
             print(text, flush=True)
 
-    send("# tsp05 fake arduino")
+    send("# TSP05 starting (fake_arduino.py)", end="\r\n")   # Serial.println: CRLF
     rx = b""
-    sim_dt, tel_dt = 1.0 / SIM_HZ, 1.0 / TELEMETRY_HZ
     next_sim = next_tel = time.monotonic()
     while True:
         now = time.monotonic()
@@ -352,26 +585,24 @@ def main() -> None:
                 rx = b""
             while b"\n" in rx:
                 raw, rx = rx.split(b"\n", 1)
-                cmd = raw.decode(errors="replace").strip()
-                if not cmd:
+                cmd = raw.decode(errors="replace")
+                if not cmd.strip():
                     continue
                 if args.print:
-                    print(f"> {cmd}", flush=True)
-                reply = uno.handle(cmd)
-                if reply:
-                    send(reply)
+                    print(f"> {cmd.strip()}", flush=True)
+                uno.handle(cmd)
             rx = rx[-256:]       # a runaway line without newline cannot grow forever
         now = time.monotonic()
         if now >= next_sim:
-            uno.step(sim_dt)
-            next_sim += sim_dt
+            uno.step(SIM_DT)
+            next_sim += SIM_DT
             if now - next_sim > 0.5:          # fell far behind (laptop slept): resync
-                next_sim = now + sim_dt
+                next_sim = now + SIM_DT
         if now >= next_tel:
-            send(uno.telemetry())
-            next_tel += tel_dt
+            send(uno.telemetry())             # buildTelemetry() ends with '\n' only
+            next_tel += TELEMETRY_PERIOD_S
             if now - next_tel > 0.5:
-                next_tel = now + tel_dt
+                next_tel = now + TELEMETRY_PERIOD_S
 
 
 if __name__ == "__main__":
