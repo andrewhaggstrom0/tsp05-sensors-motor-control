@@ -105,6 +105,8 @@ class Feedback:
         self._pending: List[_Pending] = []
         self._step_expected: Optional[float] = None
         self._events: List[str] = []
+        self._sent_mode: Optional[int] = None   # M,x sent, not yet seen in telemetry
+        self._sent_mode_at = 0.0
 
     # ------------------------------------------------------------ outputs
     def take_status(self) -> List[str]:
@@ -143,9 +145,18 @@ class Feedback:
         parts = cmd.split(",")
         if parts[0] == "M" and len(parts) == 2:
             want = int(_atof(parts[1]))
+            if want in (MODE_GUI, MODE_SENSOR):
+                # The Uno handles commands in order, so a command sent right after
+                # this one already runs in the new mode (e.g. the panel's STOP in
+                # SENSOR mode sends M,0 then D,X), before telemetry shows it.
+                self._sent_mode, self._sent_mode_at = want, now
             self._watch(cmd, now, lambda x: x["mode"] == want)
             return
-        if t is not None and int(t["mode"]) == MODE_SENSOR:
+        if self._sent_mode is not None and now - self._sent_mode_at > self.cfg.cmd_timeout_s:
+            self._sent_mode = None
+        mode_now = self._sent_mode if self._sent_mode is not None else (
+            int(t["mode"]) if t is not None else MODE_GUI)
+        if mode_now == MODE_SENSOR:
             self._events.append(f"{cmd}: ignored (SENSOR mode)")
             return
         interlock = t is not None and bool(t["interlock"])
@@ -229,6 +240,8 @@ class Feedback:
         else:
             self.tof_fault = raw == 0 or (now - self._tof_changed_at) * 1000.0 >= self.cfg.tof_stale_ms
 
+        if self._sent_mode is not None and mode == self._sent_mode:
+            self._sent_mode = None               # telemetry has caught up
         self._prev_mode, self._prev_interlock, self._last = mode, interlock, t
         self._resolve(t, now)
 

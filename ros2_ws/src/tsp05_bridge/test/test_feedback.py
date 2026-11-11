@@ -274,3 +274,24 @@ def test_firmware_fields_agree_with_inference_on_the_fake(fa):
         mismatches += (fw.dc_mode != inf.dc_mode or abs(fw.dc_target - inf.dc_target) > 1.0)
     assert fw.source == "firmware" and inf.source == "inferred"
     assert mismatches <= 0.02 * 800, mismatches
+
+
+def test_commands_right_after_a_mode_change_use_the_new_mode():
+    """The panel's STOP in SENSOR mode sends M,0 then D,X: the Uno switches mode
+    first, so D,X is obeyed even though telemetry still says SENSOR."""
+    fb = Feedback()
+    fb.on_telemetry(line(mode=1), 0.0)
+    fb.on_command("M,0", 0.01)
+    fb.on_command("D,X", 0.011)
+    assert fb.take_status() == []                       # not "ignored (SENSOR mode)"
+    fb.on_telemetry(line(mode=0), 0.05)
+    assert fb.take_status() == ["M,0: applied in 40 ms", "D,X: applied in 39 ms"]
+    # and the other way: M,1 then a motor command is ignored by the Uno
+    fb.on_command("M,1", 1.0)
+    fb.on_command("S,10.0", 1.001)
+    assert fb.take_status() == ["S,10.0: ignored (SENSOR mode)"]
+    # a sent mode that never shows up stops counting after the command timeout
+    fb.on_telemetry(line(mode=0), 1.05)
+    fb.on_command("S,20.0", 2.5)
+    fb.on_telemetry(line(mode=0, servo="20.0"), 2.55)
+    assert "S,20.0: applied in 50 ms" in fb.take_status()
