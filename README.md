@@ -77,9 +77,12 @@ first window; servo command to telemetry 24-58 ms.
 **Foxglove**
 1. Foxglove desktop app: Open connection -> Foxglove WebSocket -> `ws://localhost:8765`.
 2. Layout -> Import from file -> `foxglove/tsp05_layout.json` (plots and indicators).
-3. Command panel, once per machine (Node 18+):
-   `cd foxglove/tsp05-control-panel && npm ci && npm run local-install`,
-   restart Foxglove, then Add panel -> "TSP05 Controls".
+3. Command panel, once per machine and after each panel update: either
+   `cd foxglove/tsp05-control-panel && npm ci && npm run local-install` (Node 18+),
+   or build `tsp05.tsp05-control-panel-<version>.foxe` with `npm run package` (or in a
+   `node:20` container) and drag it onto the Foxglove window. Restart Foxglove. The
+   layout already contains the "TSP05 Controls" panel; it shows DC moving / arrived,
+   each command's status from the bridge, the telemetry rate, and the SENSOR mapping.
 
 Launch arguments: `port`, `baud` (115200), `fake`, `fake_link` (`/tmp/tsp05`),
 `foxglove`, `foxglove_port` (8765). Topics are listed in

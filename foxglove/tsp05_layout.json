@@ -56,8 +56,36 @@
       "followingViewWidth": 20,
       "sidebarDimension": 240
     },
+    "Plot!temp": {
+      "title": "Thermistor (degC) vs interlock threshold",
+      "paths": [
+        {
+          "value": "/tsp05/thermistor/temp_c.data",
+          "enabled": true,
+          "timestampMethod": "receiveTime",
+          "label": "temperature",
+          "color": "#d93025"
+        },
+        {
+          "value": "/tsp05/interlock/threshold_c.data",
+          "enabled": true,
+          "timestampMethod": "receiveTime",
+          "label": "interlock threshold",
+          "color": "#9aa0a6"
+        }
+      ],
+      "showXAxisLabels": true,
+      "showYAxisLabels": true,
+      "showLegend": true,
+      "legendDisplay": "floating",
+      "showPlotValuesInLegend": true,
+      "isSynced": true,
+      "xAxisVal": "timestamp",
+      "followingViewWidth": 60,
+      "sidebarDimension": 240
+    },
     "Plot!dcrpm": {
-      "title": "DC velocity (RPM): measured vs commanded",
+      "title": "DC velocity (RPM): measured vs target",
       "paths": [
         {
           "value": "/tsp05/dc/rpm.data",
@@ -67,10 +95,10 @@
           "color": "#e8710a"
         },
         {
-          "value": "/tsp05/cmd/dc_rpm.data",
+          "value": "/tsp05/dc/target_rpm.data",
           "enabled": true,
           "timestampMethod": "receiveTime",
-          "label": "commanded",
+          "label": "target (velocity mode)",
           "color": "#188038"
         }
       ],
@@ -85,14 +113,21 @@
       "sidebarDimension": 240
     },
     "Plot!dcdeg": {
-      "title": "DC position (deg) and PWM",
+      "title": "DC position (deg): actual vs target, and PWM",
       "paths": [
         {
           "value": "/tsp05/dc/deg.data",
           "enabled": true,
           "timestampMethod": "receiveTime",
-          "label": "position (deg)",
+          "label": "position",
           "color": "#e8710a"
+        },
+        {
+          "value": "/tsp05/dc/target_deg.data",
+          "enabled": true,
+          "timestampMethod": "receiveTime",
+          "label": "target (position mode)",
+          "color": "#188038"
         },
         {
           "value": "/tsp05/dc/pwm.data",
@@ -141,7 +176,7 @@
       "sidebarDimension": 240
     },
     "Plot!servo": {
-      "title": "Servo (deg) and thermistor (degC)",
+      "title": "Servo (deg)",
       "paths": [
         {
           "value": "/tsp05/servo/deg.data",
@@ -149,13 +184,6 @@
           "timestampMethod": "receiveTime",
           "label": "servo angle",
           "color": "#e8710a"
-        },
-        {
-          "value": "/tsp05/thermistor/temp_c.data",
-          "enabled": true,
-          "timestampMethod": "receiveTime",
-          "label": "temperature",
-          "color": "#d93025"
         }
       ],
       "showXAxisLabels": true,
@@ -167,6 +195,20 @@
       "xAxisVal": "timestamp",
       "followingViewWidth": 20,
       "sidebarDimension": 240
+    },
+    "Indicator!connected": {
+      "path": "/tsp05/bridge/connected.data",
+      "style": "background",
+      "fallbackColor": "#d93025",
+      "fallbackLabel": "Uno disconnected",
+      "rules": [
+        {
+          "operator": "=",
+          "rawValue": "true",
+          "color": "#188038",
+          "label": "Uno connected"
+        }
+      ]
     },
     "Indicator!mode": {
       "path": "/tsp05/mode.data",
@@ -196,28 +238,21 @@
         }
       ]
     },
-    "Indicator!connected": {
-      "path": "/tsp05/bridge/connected.data",
-      "style": "bulb",
-      "fallbackColor": "#d93025",
-      "fallbackLabel": "Uno disconnected",
+    "Indicator!tof": {
+      "path": "/tsp05/tof/fault.data",
+      "style": "background",
+      "fallbackColor": "#188038",
+      "fallbackLabel": "TOF ranging",
       "rules": [
         {
           "operator": "=",
           "rawValue": "true",
-          "color": "#188038",
-          "label": "Uno connected"
+          "color": "#e8710a",
+          "label": "TOF: no target"
         }
       ]
     },
-    "Gauge!temp": {
-      "path": "/tsp05/thermistor/temp_c.data",
-      "minValue": 15,
-      "maxValue": 40,
-      "colorMode": "colormap",
-      "colorMap": "red-yellow-green",
-      "reverse": true
-    },
+    "tsp05-control-panel.TSP05 Controls!panel": {},
     "RosOut!log": {
       "searchTerms": [],
       "minLogLevel": 1,
@@ -238,7 +273,7 @@
           "direction": "column",
           "splitPercentage": 50
         },
-        "second": "Plot!servo",
+        "second": "Plot!temp",
         "direction": "column",
         "splitPercentage": 66.7
       },
@@ -249,9 +284,14 @@
           "direction": "column",
           "splitPercentage": 50
         },
-        "second": "Plot!stepper",
+        "second": {
+          "first": "Plot!stepper",
+          "second": "Plot!servo",
+          "direction": "column",
+          "splitPercentage": 50
+        },
         "direction": "column",
-        "splitPercentage": 66.7
+        "splitPercentage": 50
       },
       "direction": "row",
       "splitPercentage": 50
@@ -261,23 +301,28 @@
         "first": {
           "first": "Indicator!connected",
           "second": "Indicator!mode",
-          "direction": "column",
-          "splitPercentage": 33
+          "direction": "row",
+          "splitPercentage": 50
         },
         "second": {
           "first": "Indicator!interlock",
-          "second": "Gauge!temp",
-          "direction": "column",
-          "splitPercentage": 33
+          "second": "Indicator!tof",
+          "direction": "row",
+          "splitPercentage": 50
         },
-        "direction": "column",
-        "splitPercentage": 40
+        "direction": "row",
+        "splitPercentage": 50
       },
-      "second": "RosOut!log",
+      "second": {
+        "first": "tsp05-control-panel.TSP05 Controls!panel",
+        "second": "RosOut!log",
+        "direction": "column",
+        "splitPercentage": 78
+      },
       "direction": "column",
-      "splitPercentage": 55
+      "splitPercentage": 9
     },
     "direction": "row",
-    "splitPercentage": 75
+    "splitPercentage": 62
   }
 }
