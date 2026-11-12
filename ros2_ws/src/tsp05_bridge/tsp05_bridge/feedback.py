@@ -149,6 +149,11 @@ class Feedback:
                 # The Uno handles commands in order, so a command sent right after
                 # this one already runs in the new mode (e.g. the panel's STOP in
                 # SENSOR mode sends M,0 then D,X), before telemetry shows it.
+                current = self._sent_mode if self._sent_mode is not None else (
+                    int(t["mode"]) if t is not None else MODE_GUI)
+                if want != current:
+                    self._dc_idle()              # setMode() stops the DC motor now,
+                    self._map_sent = False       # not when telemetry shows the switch
                 self._sent_mode, self._sent_mode_at = want, now
             self._watch(cmd, now, lambda x: x["mode"] == want)
             return
@@ -204,7 +209,9 @@ class Feedback:
         self._trim(now)
 
         mode, interlock = int(t["mode"]), bool(t["interlock"])
-        if self._prev_mode is not None and mode != self._prev_mode:
+        if self._prev_mode is not None and mode != self._prev_mode and mode != self._sent_mode:
+            # A switch the bridge didn't send (the button). One it sent was applied in
+            # on_command, and resetting here would wipe a DC command sent since.
             self._dc_idle()                      # setMode() stops the DC motor
             self._map_sent = False               # SENSOR mode re-sends its first rpm
         if interlock and not self._prev_interlock:

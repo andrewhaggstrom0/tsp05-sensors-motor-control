@@ -295,3 +295,19 @@ def test_commands_right_after_a_mode_change_use_the_new_mode():
     fb.on_command("S,20.0", 2.5)
     fb.on_telemetry(line(mode=0, servo="20.0"), 2.55)
     assert "S,20.0: applied in 50 ms" in fb.take_status()
+
+
+def test_dc_command_right_after_a_mode_change_survives_the_switch_line():
+    """M,0 then D,P before telemetry shows GUI mode: the Uno stops the DC motor on
+    M,0 and then starts the move, so the line showing the switch must not reset it."""
+    fb = Feedback()
+    fb.on_telemetry(line(mode=1, flex="50.0"), 0.0)     # SENSOR mode: flex drives the DC
+    assert fb.dc_mode == DC_VELOCITY
+    fb.on_command("M,0", 0.01)
+    assert fb.dc_mode == DC_IDLE                        # setMode() stops it on M,0
+    fb.on_command("D,P,90.0", 0.011)
+    fb.on_telemetry(line(mode=0, pwm=150), 0.05)        # first line in GUI mode
+    assert (fb.dc_mode, fb.dc_target) == (DC_POSITION, pytest.approx(90.0))
+    # a switch the bridge didn't send (the button) still resets on telemetry
+    fb.on_telemetry(line(mode=1, flex="0.0"), 0.10)
+    assert (fb.dc_mode, fb.dc_target) == (DC_VELOCITY, 0.0)
