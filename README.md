@@ -139,7 +139,37 @@ After the stop it decays smoothly rather than holding the last value.
 
 ## Individual Contributions
 ### <Name 1>
-### <Name 2>
+### Yashasvi Sorapalli (Track 2: servo, stepper, button, main sketch)
+- **Servo** (`firmware/tsp05/actuators.cpp`): 0-180 deg mapped linearly onto measured
+  pulse limits. With the bring-up sketch (`firmware/bringup/servo/`) the horn strained
+  at 620 us and stalled at 2400 us, so the safe travel is 640-2380 us (183 deg,
+  ~9.5 us/deg) and 0-180 deg uses 640-2351 us. The limits are also passed to
+  `Servo.attach()`, so the library clamps to them as well.
+- **Stepper (EasyDriver)**: verified 1600 steps/rev (1/8 microstep x 200) with
+  `firmware/bringup/stepper/`; coil pairs red-green / blue-black (35.9 ohm). Moves are
+  queued as a target in steps, and `actuatorsUpdate()` emits at most one STEP pulse
+  per call once `STEPPER_STEP_US` (1250 us) has passed, so a move never blocks `loop()`.
+- **Button** (`firmware/tsp05/button.cpp`): 30 ms debounce. A raw change is accepted
+  only after it holds for the full window, and a press is reported once, on the
+  press edge. A button held at boot is not a press. Each press toggles GUI/SENSOR mode.
+- **Main sketch** (`firmware/tsp05/tsp05.ino`): every module runs as
+  `xxxInit()` / `xxxUpdate()`, and each update limits itself to its own rate, so
+  `loop()` never waits.
+  - **Command parser** (`docs/protocol.md`): reads without waiting and acts on `\n`.
+    A line longer than 31 characters is dropped, and unknown commands are ignored.
+    Motor commands are ignored in SENSOR mode; `M,x` works in both modes.
+  - **Modes**: switching mode stops the DC motor and discards slot events and TOF
+    swipes from before the switch.
+  - **SENSOR-mode mappings at 50 Hz**: TOF swipe -> servo sweep at 45 deg/s,
+    flex bend -> DC rpm (10 deg dead zone, 60 rpm at 90 deg, re-sent only on a
+    0.5 rpm change), slot event -> +15 deg stepper jog. A flex fault gives 0 rpm.
+  - **Thermal interlock**: active in both modes; above `INTERLOCK_TEMP_C` or on a
+    thermistor fault the DC motor stops (`dcSetInterlock()`).
+  - **20 Hz telemetry**: the `T` line is built into a buffer and written only as
+    fast as the 64-byte Serial TX buffer has room, so printing never stalls the loop.
+    Floats are formatted in fixed point, since AVR `printf` has no `%f`.
+- **Constants** in `firmware/tsp05/config.h` (servo, stepper, button, scheduler,
+  mappings, interlock), with the measured values and how they were measured.
 ### Harish Bhamitipadi Magesh (Track 3: TOF + slot sensor)
 - **TOF (VL53L1X, I2C)** (`firmware/tsp05/sensors_digital.cpp`): continuous ranging in
   short mode, 33 ms timing budget, 40 ms inter-measurement period (the sensor's 100 ms
@@ -197,6 +227,21 @@ After the stop it decays smoothly rather than holding the last value.
 
 ## Challenges
 <!-- Per person: problem, analysis of cause, resolution -->
+
+### Yashasvi Sorapalli
+- **Finding the servo's real travel.** Default pulse limits don't match this servo:
+  too narrow loses travel, too wide drives it into its end stops. The bring-up sketch nudges the pulse 10 us at a time inside a hard
+  500-2500 us clamp. The horn strained at 620 us and stalled at 2400 us, so the limits
+  sit just inside those (640-2380 us), and 0-180 deg is mapped onto them.
+- **Keeping the loop non-blocking.** A blocking stepper move (`delayMicroseconds()`
+  between steps, as in the bring-up sketch) or a `Serial.print()` of the full
+  telemetry line would stall every other module while it runs. Fix: the stepper emits
+  one step per `loop()` pass when one is due, and telemetry is sent only as fast as the
+  TX buffer has room.
+- **Stepper slower than nominal.** Track 3 measured the stepper at 26.3 rpm instead of
+  the nominal 30 rpm (12 % slow) at `STEPPER_STEP_US` = 1250. Cause: at most one step
+  goes out per `loop()` pass, so a pass longer than 1.25 ms delays the step.
+  Positions are still exact, since every step is counted; only the speed is lower.
 
 ### Harish Bhamitipadi Magesh
 - **RPM read low with unevenly cut tabs.** The first version of the slow-down limit
