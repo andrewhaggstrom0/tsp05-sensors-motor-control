@@ -139,7 +139,12 @@ After the stop it decays smoothly rather than holding the last value.
 
 ## Individual Contributions
 ### <Name 1>
-### <Name 2>
+### Yashasvi Sorapalli (Track 2: Servo, Stepper, Button)
+- **Servo:** 0-180 deg mapped onto the measured 640-2351 us. The servo strains at 620 us and stalls at 2400 us.
+- **Stepper (EasyDriver):** 1600 steps/rev, verified. At most one step per `loop()` pass, so a move never blocks.
+- **Button:** 30 ms debounce, reports a press once on the press edge, and toggles GUI/SENSOR mode.
+- **Main sketch:** command parser, modes, SENSOR-mode mappings at 50 Hz, the thermal interlock, and 20 Hz telemetry that's only sent when the TX buffer has room.
+
 ### Harish Bhamitipadi Magesh (Track 3: TOF + slot sensor)
 - **TOF (VL53L1X, I2C)** (`firmware/tsp05/sensors_digital.cpp`): continuous ranging in
   short mode, 33 ms timing budget, 40 ms inter-measurement period (the sensor's 100 ms
@@ -197,6 +202,13 @@ After the stop it decays smoothly rather than holding the last value.
 
 ## Challenges
 <!-- Per person: problem, analysis of cause, resolution -->
+### Yashasvi Sorapalli
+- **The stepper vibrated but didn't turn.** At first the motor only rocked back and
+  forth about its shaft. Cause: the motor wires were connected to the EasyDriver
+  differently from the writeup, so each driver output wasn't driving a single coil.
+  Fix: measured the resistance between wire pairs to find the two coils (red-green
+  and blue-black, 35.9 ohm each) and rewired each coil to one output. The stepper
+  now turns, verified at 1600 steps/rev with `firmware/bringup/stepper/`.
 
 ### Harish Bhamitipadi Magesh
 - **RPM read low with unevenly cut tabs.** The first version of the slow-down limit
