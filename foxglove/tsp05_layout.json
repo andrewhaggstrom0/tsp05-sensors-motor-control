@@ -1,6 +1,7 @@
 {
   "configById": {
     "Plot!tof": {
+      "foxglovePanelTitle": "TOF distance (mm): raw vs filtered",
       "title": "TOF distance (mm): raw vs filtered",
       "paths": [
         {
@@ -29,6 +30,7 @@
       "sidebarDimension": 240
     },
     "Plot!flex": {
+      "foxglovePanelTitle": "Flex bend (deg): raw vs filtered",
       "title": "Flex bend (deg): raw vs filtered",
       "paths": [
         {
@@ -57,6 +59,7 @@
       "sidebarDimension": 240
     },
     "Plot!temp": {
+      "foxglovePanelTitle": "Thermistor (degC) vs interlock threshold",
       "title": "Thermistor (degC) vs interlock threshold",
       "paths": [
         {
@@ -85,6 +88,7 @@
       "sidebarDimension": 240
     },
     "Plot!dcrpm": {
+      "foxglovePanelTitle": "DC velocity (RPM): measured vs target",
       "title": "DC velocity (RPM): measured vs target",
       "paths": [
         {
@@ -113,6 +117,7 @@
       "sidebarDimension": 240
     },
     "Plot!dcdeg": {
+      "foxglovePanelTitle": "DC position (deg): actual vs target, and PWM",
       "title": "DC position (deg): actual vs target, and PWM",
       "paths": [
         {
@@ -148,6 +153,7 @@
       "sidebarDimension": 240
     },
     "Plot!stepper": {
+      "foxglovePanelTitle": "Stepper (deg): actual vs target",
       "title": "Stepper (deg): actual vs target",
       "paths": [
         {
@@ -176,6 +182,7 @@
       "sidebarDimension": 240
     },
     "Plot!servo": {
+      "foxglovePanelTitle": "Servo (deg)",
       "title": "Servo (deg)",
       "paths": [
         {
