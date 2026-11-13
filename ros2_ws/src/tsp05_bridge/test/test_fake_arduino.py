@@ -244,3 +244,61 @@ def test_sensor_mode_flex_mapping_and_slot_jog(fa):
 
 def uno_steps(fa):
     return fa.STEPS_PER_REV
+
+
+# ---------------------------------------------------------------- appended fields
+def _extras(uno):
+    t = p.parse_telemetry(uno.telemetry())
+    return {k: t[k] for k in p.TELEMETRY_FIELDS_EXTRA}
+
+
+def test_line_lengths_new_and_legacy(fa):
+    assert len(fa.FakeUno("room", seed=1).telemetry().split(",")) == 1 + len(p.TELEMETRY_FIELDS)
+    legacy = fa.FakeUno("room", seed=1, legacy=True)
+    assert len(legacy.telemetry().split(",")) == 1 + len(p.TELEMETRY_FIELDS_BASE)
+    assert set(p.parse_telemetry(legacy.telemetry())) == set(p.TELEMETRY_FIELDS_BASE)
+
+
+def test_dc_mode_target_arrived_follow_commands(fa):
+    uno = fa.FakeUno("room", 0.0, seed=1)
+    run(uno, 0.2)
+    assert _extras(uno)["dc_mode"] == 0 and _extras(uno)["dc_target"] == 0.0
+    start = uno.dc_deg()
+    uno.handle("D,P,90")
+    e = _extras(uno)
+    assert (e["dc_mode"], e["dc_arrived"]) == (2, 0)
+    assert e["dc_target"] == pytest.approx(start + 90.0)          # same frame as dc_deg
+    run(uno, 1.0)
+    e = _extras(uno)
+    assert e["dc_arrived"] == 1 and abs(uno.dc_deg() - e["dc_target"]) <= define("DC_POS_TOL_DEG")
+    uno.handle("D,V,200")                                          # clamped like ctrlSetVelocity
+    e = _extras(uno)
+    assert (e["dc_mode"], e["dc_target"], e["dc_arrived"]) == (1, define("DC_MAX_RPM"), 0)
+    uno.handle("M,1")
+    assert _extras(uno)["dc_mode"] == 0                            # setMode() stops the motor ...
+    run(uno, 0.05)
+    assert _extras(uno)["dc_mode"] == 1                            # ... then the flex mapping drives it
+    uno.handle("M,0")
+    assert (_extras(uno)["dc_mode"], _extras(uno)["dc_target"]) == (0, 0.0)
+
+
+def test_interlock_sets_dc_idle(fa):
+    uno = fa.FakeUno("cycle", 0.0, seed=4)
+    uno.handle("D,P,3600")
+    while not uno.interlock:
+        uno.step()
+    assert (_extras(uno)["dc_mode"], _extras(uno)["dc_target"]) == (0, 0.0)
+
+
+def test_tof_fault_timing(fa):
+    uno = fa.FakeUno("room", 0.0, seed=1)
+    run(uno, 1.0)
+    assert _extras(uno)["tof_fault"] == 1                          # no valid range since boot
+    run(uno, 1.2)                                                  # hand in view at 2.0-2.4 s
+    assert _extras(uno)["tof_fault"] == 0
+    while uno._hand():
+        uno.step()
+    last_valid = uno._tof_last_valid
+    while not uno.tof_fault():
+        uno.step()
+    assert uno.t - last_valid == pytest.approx(define("TOF_STALE_MS") / 1000, abs=0.03)

@@ -17,7 +17,8 @@ LAYOUT = PKG.parent.parent.parent / "foxglove" / "tsp05_layout.json"
 pytestmark = pytest.mark.skipif(not LAYOUT.exists(), reason="foxglove/ not in this checkout")
 
 KNOWN = {f"{t.NS}/{name}" for name in (
-    *t.FLOAT_TOPICS.values(), *t.FLAG_TOPICS.values(), *t.STATUS_TOPICS, *t.COMMAND_TOPICS)}
+    *t.FLOAT_TOPICS.values(), *t.FLAG_TOPICS.values(), *t.FEEDBACK_TOPICS,
+    *t.STATUS_TOPICS, *t.COMMAND_TOPICS)}
 
 
 @pytest.fixture(scope="module")
@@ -49,7 +50,8 @@ def test_mosaic_matches_panel_configs(layout):
 def test_graded_plots_present(layout):
     """Raw vs filtered for TOF and flex is a graded item."""
     plotted = {p["value"] for c in layout["configById"].values() for p in c.get("paths", [])}
-    for pair in (("tof/raw_mm", "tof/filt_mm"), ("flex/deg", "flex/deg_filt"), ("dc/rpm", "cmd/dc_rpm")):
+    for pair in (("tof/raw_mm", "tof/filt_mm"), ("flex/deg", "flex/deg_filt"), ("dc/rpm", "dc/target_rpm"),
+                 ("dc/deg", "dc/target_deg"), ("thermistor/temp_c", "interlock/threshold_c")):
         assert {f"{t.NS}/{x}.data" for x in pair} <= plotted, pair
 
 
@@ -68,3 +70,25 @@ def test_control_panel_topics_match_bridge():
     assert used <= KNOWN, f"unknown topics: {sorted(used - KNOWN)}"
     commands = {f"{t.NS}/{c}" for c in t.COMMAND_TOPICS}
     assert commands <= used, f"panel cannot send: {sorted(commands - used)}"
+
+
+CONFIG_H = LAYOUT.parent.parent / "firmware" / "tsp05" / "config.h"
+
+
+@pytest.mark.skipif(not (PANEL_SRC.exists() and CONFIG_H.exists()), reason="panel or firmware not in this checkout")
+@pytest.mark.parametrize("key,define", [
+    ("flexDeadzoneDeg", "MAP_FLEX_DEADZONE_DEG"), ("flexFullDeg", "MAP_FLEX_FULL_DEG"),
+    ("dcMaxRpm", "MAP_DC_MAX_RPM"), ("swipeServoDegS", "GESTURE_SERVO_DEG_S"),
+    ("slotJogDeg", "MAP_SLOT_JOG_DEG"),
+])
+def test_panel_sensor_map_matches_config_h(key, define):
+    """The panel's SENSOR-mode mapping text must match the firmware's constants."""
+    panel = re.search(rf"\b{key}: (-?[\d.]+)", PANEL_SRC.read_text())
+    firmware = re.search(rf"^\s*#define\s+{define}\s+(-?[\d.]+)", CONFIG_H.read_text(), re.MULTILINE)
+    assert panel and firmware, (key, define)
+    assert float(panel.group(1)) == float(firmware.group(1))
+
+
+def test_layout_includes_the_control_panel(layout):
+    """Foxglove names extension panels "<extension name>.<panel name>!<id>"."""
+    assert any(k.startswith("tsp05-control-panel.TSP05 Controls!") for k in layout["configById"])

@@ -77,14 +77,34 @@ first window; servo command to telemetry 24-58 ms.
 **Foxglove**
 1. Foxglove desktop app: Open connection -> Foxglove WebSocket -> `ws://localhost:8765`.
 2. Layout -> Import from file -> `foxglove/tsp05_layout.json` (plots and indicators).
-3. Command panel, once per machine (Node 18+):
-   `cd foxglove/tsp05-control-panel && npm ci && npm run local-install`,
-   restart Foxglove, then Add panel -> "TSP05 Controls".
+3. Command panel, once per machine and after each panel update: either
+   `cd foxglove/tsp05-control-panel && npm ci && npm run local-install` (Node 18+),
+   or build `tsp05.tsp05-control-panel-<version>.foxe` with `npm run package` (or in a
+   `node:20` container) and drag it onto the Foxglove window. Restart Foxglove. The
+   layout already contains the "TSP05 Controls" panel; it shows DC moving / arrived,
+   each command's status from the bridge, the telemetry rate, and the SENSOR mapping.
 
 Launch arguments: `port`, `baud` (115200), `fake`, `fake_link` (`/tmp/tsp05`),
 `foxglove`, `foxglove_port` (8765). Topics are listed in
 `ros2_ws/src/tsp05_bridge/tsp05_bridge/topics.py`; they follow the team guide
 with `fsr/*` renamed to `flex/*`.
+
+**Feedback topics.** Firmware that sends `dc_mode`, `dc_target`, `dc_arrived` and
+`tof_fault` (docs/protocol.md) supplies those four directly; with older firmware
+(19-field line) the bridge works them out from the commands it sends and the telemetry (`tsp05_bridge/feedback.py`; thresholds
+are ROS parameters with defaults from `config.h`):
+
+| Topic | Type | Meaning |
+|---|---|---|
+| `/tsp05/dc/mode` | Int8 | DC controller mode: 0 idle, 1 velocity, 2 position |
+| `/tsp05/dc/target` | Float32 | position mode: target deg (dc_deg when sent + move); velocity mode: target rpm; idle: 0 |
+| `/tsp05/dc/target_deg`, `/tsp05/dc/target_rpm` | Float32 | the same target split by unit for plots: NaN (a gap) when not in that mode |
+| `/tsp05/dc/arrived` | Bool | position mode and within 2 deg of the target (flickers if the motor coasts through) |
+| `/tsp05/dc/settled` | Bool | arrived and below 2 rpm for 5 lines in a row: what the GUI calls "arrived" |
+| `/tsp05/tof/fault` | Bool | TOF reading still 0 or unchanged for 500 ms (no valid range: values are frozen) |
+| `/tsp05/cmd/status` | String | per command: `applied in N ms`, `ignored (SENSOR mode)`, `ignored (interlock)`, or `no effect seen within 1 s` |
+| `/tsp05/bridge/rate_hz`, `/tsp05/bridge/line_age_ms` | Float32 | telemetry rate and time since the last line |
+| `/tsp05/interlock/threshold_c` | Float32 | interlock threshold (29 C, `INTERLOCK_TEMP_C`), for a limit line on the temperature plot |
 
 ## Calibration Results
 <!-- Transfer function plot, filtering plot, error table per sensor -->

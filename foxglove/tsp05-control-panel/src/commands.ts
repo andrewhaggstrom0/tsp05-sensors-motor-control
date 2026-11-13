@@ -24,7 +24,21 @@ export const STATE = {
   dcRpm: `${NS}/dc/rpm`,
   stepperDeg: `${NS}/stepper/deg`,
   stepperTargetDeg: `${NS}/stepper/target_deg`,
+  flexFiltDeg: `${NS}/flex/deg_filt`,
+  tofRawMm: `${NS}/tof/raw_mm`,
+  slotCount: `${NS}/slot/count`,
+  // feedback worked out by the bridge (tsp05_bridge/feedback.py)
+  dcMode: `${NS}/dc/mode`,
+  dcTarget: `${NS}/dc/target`,
+  dcArrived: `${NS}/dc/arrived`,
+  dcSettled: `${NS}/dc/settled`,
+  tofFault: `${NS}/tof/fault`,
+  rateHz: `${NS}/bridge/rate_hz`,
+  lineAgeMs: `${NS}/bridge/line_age_ms`,
 } as const;
+
+/** One line per command from the bridge: applied / ignored / no effect. */
+export const STATUS_TOPIC = `${NS}/cmd/status`;
 
 export type CmdTopic = (typeof CMD)[keyof typeof CMD];
 type SchemaName = "std_msgs/msg/Int8" | "std_msgs/msg/Float32" | "std_msgs/msg/Empty";
@@ -132,8 +146,28 @@ export type PanelState = {
   dcRpm?: number;
   stepperDeg?: number;
   stepperTargetDeg?: number;
+  flexFiltDeg?: number;
+  tofRawMm?: number;
+  slotCount?: number;
+  dcMode?: number;
+  dcTarget?: number;
+  dcArrived?: boolean;
+  dcSettled?: boolean;
+  tofFault?: boolean;
+  rateHz?: number;
+  lineAgeMs?: number;
+  /** Last time a telemetry-driven topic arrived (not the bridge's own health topics). */
   lastMessageMs?: number;
+  /** Most recent command statuses, newest last. */
+  statuses?: StatusLine[];
 };
+
+export type StatusLine = { text: string; atMs: number };
+export const MAX_STATUS_LINES = 4;
+
+// Published by the bridge on a timer even when the Uno is silent: they must not
+// make the Uno look alive.
+const HEALTH_KEYS = new Set<keyof PanelState>(["connected", "rateHz", "lineAgeMs"]);
 
 const KEY_BY_TOPIC: Record<string, keyof PanelState> = Object.fromEntries(
   Object.entries(STATE).map(([key, topic]) => [topic, key as keyof PanelState]),
@@ -149,8 +183,17 @@ export function applyMessages(
 ): PanelState {
   let next = prev;
   for (const ev of events) {
-    const key = KEY_BY_TOPIC[ev.topic];
     const data = (ev.message as { data?: unknown } | undefined)?.data;
+    if (ev.topic === STATUS_TOPIC && typeof data === "string") {
+      if (next === prev) {
+        next = { ...prev };
+      }
+      next.statuses = [...(next.statuses ?? []), { text: data, atMs: nowMs }].slice(
+        -MAX_STATUS_LINES,
+      );
+      continue;
+    }
+    const key = KEY_BY_TOPIC[ev.topic];
     if (key == undefined || (typeof data !== "number" && typeof data !== "boolean")) {
       continue;
     }
@@ -158,7 +201,9 @@ export function applyMessages(
       next = { ...prev };
     }
     (next as Record<string, unknown>)[key] = data;
-    next.lastMessageMs = nowMs;
+    if (!HEALTH_KEYS.has(key)) {
+      next.lastMessageMs = nowMs;
+    }
   }
   return next;
 }
@@ -167,9 +212,111 @@ export function applyMessages(
 export const STALE_MS = 2000;
 
 export function isLive(state: PanelState, nowMs: number): boolean {
-  return (
-    state.connected === true &&
-    state.lastMessageMs != undefined &&
-    nowMs - state.lastMessageMs < STALE_MS
-  );
+  if (state.connected !== true || state.lastMessageMs == undefined) {
+    return false;
+  }
+  if (nowMs - state.lastMessageMs >= STALE_MS) {
+    return false;
+  }
+  // The bridge measures the age of the last telemetry line itself; trust it when present.
+  return state.lineAgeMs == undefined || state.lineAgeMs < STALE_MS;
 }
+
+// ---------------------------------------------------------------- feedback views
+export type Tone = "good" | "warn" | "bad" | "neutral";
+
+/** Below this the link is degraded (the Uno sends 20 Hz). */
+export const RATE_WARN_HZ = 15;
+/** 20 missed lines: show that telemetry has stopped. */
+export const LINE_AGE_WARN_MS = 1000;
+
+export function linkView(state: PanelState, nowMs: number): { text: string; tone: Tone } {
+  if (!isLive(state, nowMs)) {
+    return {
+      text: state.connected === true ? "No telemetry" : "Uno disconnected",
+      tone: "bad",
+    };
+  }
+  if (state.lineAgeMs != undefined && state.lineAgeMs >= LINE_AGE_WARN_MS) {
+    // Lines have stopped but not yet for STALE_MS: say so instead of "connected · 0 Hz".
+    return { text: `No telemetry for ${(state.lineAgeMs / 1000).toFixed(1)} s`, tone: "bad" };
+  }
+  if (state.rateHz == undefined) {
+    return { text: "Uno connected", tone: "good" };
+  }
+  const text = `Uno connected · ${state.rateHz.toFixed(1)} Hz`;
+  return { text, tone: state.rateHz < RATE_WARN_HZ ? "warn" : "good" };
+}
+
+/** A position move that has not settled after this long gets a warning. */
+export const DC_SETTLE_WARN_MS = 3000;
+
+export function dcView(
+  state: PanelState,
+  nowMs: number,
+  lastMoveSentMs: number | undefined,
+): { text: string; tone: Tone } {
+  const f1 = (v: number | undefined) => (v == undefined ? "—" : v.toFixed(1));
+  if (state.dcMode === 2) {
+    if (state.dcSettled === true) {
+      return {
+        text: `arrived ✓ at ${f1(state.dcDeg)}° (target ${f1(state.dcTarget)}°)`,
+        tone: "good",
+      };
+    }
+    if (lastMoveSentMs != undefined && nowMs - lastMoveSentMs > DC_SETTLE_WARN_MS) {
+      return {
+        text: `not arrived after ${DC_SETTLE_WARN_MS / 1000} s: ${f1(state.dcDeg)}° vs target ${f1(state.dcTarget)}°`,
+        tone: "warn",
+      };
+    }
+    return { text: `moving to ${f1(state.dcTarget)}° (now ${f1(state.dcDeg)}°)`, tone: "neutral" };
+  }
+  if (state.dcMode === 1) {
+    return { text: `holding ${f1(state.dcTarget)} rpm (now ${f1(state.dcRpm)})`, tone: "neutral" };
+  }
+  if (state.dcMode === 0) {
+    return { text: "stopped", tone: "neutral" };
+  }
+  return { text: "—", tone: "neutral" };
+}
+
+export function statusTone(text: string): Tone {
+  if (text.includes(": applied")) {
+    return "good";
+  }
+  if (text.includes(": ignored")) {
+    return "warn";
+  }
+  if (text.includes("no effect")) {
+    return "bad";
+  }
+  return "neutral";
+}
+
+/** Slider shows the live servo angle unless the user is dragging it. */
+export function servoSliderValue({
+  dragging,
+  dragValue,
+  live,
+}: {
+  dragging: boolean;
+  dragValue: number;
+  live: number | undefined;
+}): number {
+  return dragging || live == undefined ? dragValue : Math.round(live);
+}
+
+// One-click moves verified on the bench (Track 1): every position move ends within
+// +-2 deg in about 0.5 s and velocity holds within 1 %.
+export const DC_MOVE_PRESETS = [-360, -90, -10, 10, 90, 360] as const;
+export const DC_RPM_PRESETS = [-60, 30, 60, 120] as const;
+
+// SENSOR-mode mappings, from firmware/tsp05/config.h (a test checks them).
+export const SENSOR_MAP = {
+  flexDeadzoneDeg: 10, // MAP_FLEX_DEADZONE_DEG
+  flexFullDeg: 90, // MAP_FLEX_FULL_DEG
+  dcMaxRpm: 60, // MAP_DC_MAX_RPM
+  swipeServoDegS: 45, // GESTURE_SERVO_DEG_S
+  slotJogDeg: 15, // MAP_SLOT_JOG_DEG
+} as const;

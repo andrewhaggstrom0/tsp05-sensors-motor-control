@@ -61,14 +61,19 @@ class Harness:
         self.bridge = BridgeNode(parameter_overrides=[
             Parameter("port", value=port), Parameter("reconnect_period", value=0.2)])
         self.probe = rclpy.create_node("probe")
-        self.last, self.count, self.logs = {}, {}, []
+        self.last, self.count, self.logs, self.status = {}, {}, [], []
         topics = {t: Float32 for t in FLOAT_TOPICS.values()}
         topics.update({t: m for t, m in SPECIAL_TOPICS.values()})
         topics["bridge/connected"] = Bool
+        topics.update({"dc/mode": Int8, "dc/target": Float32, "dc/target_deg": Float32,
+                       "dc/target_rpm": Float32, "dc/arrived": Bool, "dc/settled": Bool,
+                       "tof/fault": Bool, "bridge/rate_hz": Float32, "bridge/line_age_ms": Float32,
+                       "interlock/threshold_c": Float32})
         for topic, msg_type in topics.items():
             self.probe.create_subscription(msg_type, f"{NS}/{topic}",
                                            lambda m, t=topic: self._rx(t, m.data), 50)
         self.probe.create_subscription(String, f"{NS}/log", lambda m: self.logs.append(m.data), 50)
+        self.probe.create_subscription(String, f"{NS}/cmd/status", lambda m: self.status.append(m.data), 50)
         self.pubs = {}
         self.ex = rclpy.executors.SingleThreadedExecutor()
         self.ex.add_node(self.bridge)
@@ -203,6 +208,71 @@ def test_survives_malformed_lines():
         assert h.bridge._reader.is_alive()
         assert h.bridge._n_bad > 0, "no malformed lines were seen"
         assert 30 <= good <= 50, f"{good} good lines in 3 s with 30 % corrupted"
+    finally:
+        h.close()
+        fake.stop()
+        rclpy.shutdown()
+
+
+# ---------------------------------------------------------------- feedback topics
+def test_feedback_topics_follow_a_dc_move(env):
+    h, _ = env
+    assert h.wait(lambda: {"dc/mode", "dc/target", "dc/settled", "bridge/rate_hz"} <= set(h.last))
+    assert h.last["dc/mode"] == 0
+    start = h.last["dc/deg"]
+    h.send("dc_move_deg", Float32, 90.0)
+    assert h.wait(lambda: h.last["dc/mode"] == 2 and h.last["dc/target"] == pytest.approx(start + 90.0, abs=1.0))
+    assert h.wait(lambda: h.last["dc/settled"] is True and h.last["dc/arrived"] is True, 3.0)
+    assert abs(h.last["dc/deg"] - h.last["dc/target"]) <= 2.0
+    assert h.last["dc/target_deg"] == h.last["dc/target"] and math.isnan(h.last["dc/target_rpm"])
+    assert h.wait(lambda: any(x.startswith("D,P,90.0: applied in ") for x in h.status)), h.status
+    h.send("dc_rpm", Float32, -45.0)
+    assert h.wait(lambda: h.last["dc/mode"] == 1 and h.last["dc/target"] == pytest.approx(-45.0)
+                  and h.last["dc/settled"] is False)
+    assert h.wait(lambda: h.last["dc/target_rpm"] == pytest.approx(-45.0) and math.isnan(h.last["dc/target_deg"]))
+    h.send("dc_stop", Empty)
+    assert h.wait(lambda: h.last["dc/mode"] == 0 and h.last["dc/target"] == 0.0)
+
+
+def test_feedback_reports_ignored_commands_and_health(env):
+    h, _ = env
+    assert h.wait(lambda: h.last.get("mode") == 0)
+    h.send("mode", Int8, 1)
+    assert h.wait(lambda: h.last.get("mode") == 1)
+    h.send("stepper_deg", Float32, 90.0)
+    assert h.wait(lambda: "P,90.0: ignored (SENSOR mode)" in h.status), h.status
+    assert h.wait(lambda: 17.0 <= h.last.get("bridge/rate_hz", 0) <= 23.0, 4.0), h.last.get("bridge/rate_hz")
+    assert h.last["bridge/line_age_ms"] < 200
+    assert h.last["interlock/threshold_c"] == 29.0
+
+
+def test_feedback_tof_fault_follows_the_hand(env):
+    """The fake's hand passes the TOF at 2.0-2.4 s of every 10 s."""
+    h, _ = env
+    seen = []
+    end = time.monotonic() + 12.0
+    while time.monotonic() < end and [v for v in seen][-3:] != [True, False, True]:
+        h.ex.spin_once(timeout_sec=0.02)
+        if "tof/fault" in h.last and (not seen or seen[-1] != h.last["tof/fault"]):
+            seen.append(h.last["tof/fault"])
+    assert seen[-3:] == [True, False, True], seen
+
+
+def test_feedback_also_works_with_older_firmware():
+    """19-field telemetry (firmware before dc_mode..tof_fault): the same topics,
+    worked out by the bridge, and nothing counted as malformed."""
+    init_isolated()
+    link = os.path.join(tempfile.mkdtemp(), "tsp05")
+    fake = Fake(link, "--legacy-telemetry")
+    fake.start()
+    h = Harness(link)
+    try:
+        assert h.wait(lambda: {"dc/mode", "dc/target", "tof/fault"} <= set(h.last))
+        start = h.last["dc/deg"]
+        h.send("dc_move_deg", Float32, 90.0)
+        assert h.wait(lambda: h.last["dc/mode"] == 2 and h.last["dc/target"] == pytest.approx(start + 90.0, abs=1.0))
+        assert h.wait(lambda: h.last["dc/settled"] is True, 3.0)
+        assert h.bridge._n_bad == 0 and h.bridge._fb.source == "inferred"
     finally:
         h.close()
         fake.stop()

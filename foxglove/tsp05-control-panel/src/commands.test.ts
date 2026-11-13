@@ -15,6 +15,14 @@ import {
   isLive,
   parseInput,
   stopSequence,
+  DC_MOVE_PRESETS,
+  DC_RPM_PRESETS,
+  DC_SETTLE_WARN_MS,
+  STATUS_TOPIC,
+  dcView,
+  linkView,
+  servoSliderValue,
+  statusTone,
 } from "./commands";
 
 test("each command goes to its topic with the protocol's 1-decimal value", () => {
@@ -90,7 +98,7 @@ test("applyMessages keeps the latest value per topic and ignores others", () => 
       { topic: STATE.servoDeg, message: { data: 10 } },
       { topic: STATE.servoDeg, message: { data: 20 } },
       { topic: STATE.interlock, message: { data: true } },
-      { topic: "/tsp05/tof/raw_mm", message: { data: 500 } },
+      { topic: "/tsp05/some/other_topic", message: { data: 500 } },
       { topic: STATE.mode, message: { data: "1" } }, // wrong type: ignored
     ],
     1000,
@@ -100,8 +108,118 @@ test("applyMessages keeps the latest value per topic and ignores others", () => 
 });
 
 test("isLive needs the connected flag and recent telemetry", () => {
-  const s = applyMessages({}, [{ topic: STATE.connected, message: { data: true } }], 1000);
+  const s = applyMessages(
+    {},
+    [
+      { topic: STATE.connected, message: { data: true } },
+      { topic: STATE.servoDeg, message: { data: 90 } }, // telemetry, not just the bridge flag
+    ],
+    1000,
+  );
   assert.equal(isLive(s, 1000 + STALE_MS - 1), true);
   assert.equal(isLive(s, 1000 + STALE_MS), false);
   assert.equal(isLive({ ...s, connected: false }, 1000), false);
+});
+
+// ---------------------------------------------------------------- feedback (PR: bridge feedback)
+test("command statuses are kept, newest last, at most 4", () => {
+  let s = applyMessages({}, [], 0);
+  for (let i = 1; i <= 6; i++) {
+    s = applyMessages(
+      s,
+      [{ topic: STATUS_TOPIC, message: { data: `S,${i}.0: applied in 30 ms` } }],
+      i,
+    );
+  }
+  assert.deepEqual(
+    s.statuses?.map((x) => x.text),
+    [
+      "S,3.0: applied in 30 ms",
+      "S,4.0: applied in 30 ms",
+      "S,5.0: applied in 30 ms",
+      "S,6.0: applied in 30 ms",
+    ],
+  );
+});
+
+test("bridge health topics do not make a silent Uno look alive", () => {
+  const s0 = applyMessages(
+    {},
+    [
+      { topic: STATE.connected, message: { data: true } },
+      { topic: STATE.servoDeg, message: { data: 90 } },
+    ],
+    1000,
+  );
+  assert.equal(isLive(s0, 1500), true);
+  // The Uno goes quiet; the bridge keeps publishing rate/age/connected.
+  const s1 = applyMessages(
+    s0,
+    [
+      { topic: STATE.connected, message: { data: true } },
+      { topic: STATE.rateHz, message: { data: 0 } },
+      { topic: STATE.lineAgeMs, message: { data: 2500 } },
+    ],
+    3500,
+  );
+  assert.equal(isLive(s1, 3500), false);
+  assert.equal(linkView(s1, 3500).text, "No telemetry");
+});
+
+test("linkView shows the rate and warns below 15 Hz", () => {
+  const live = applyMessages(
+    {},
+    [
+      { topic: STATE.connected, message: { data: true } },
+      { topic: STATE.servoDeg, message: { data: 90 } },
+      { topic: STATE.rateHz, message: { data: 20 } },
+      { topic: STATE.lineAgeMs, message: { data: 30 } },
+    ],
+    0,
+  );
+  assert.deepEqual(linkView(live, 100), { text: "Uno connected · 20.0 Hz", tone: "good" });
+  assert.equal(linkView({ ...live, rateHz: 9.5 }, 100).tone, "warn");
+  assert.deepEqual(linkView({ ...live, rateHz: 0, lineAgeMs: 1240 }, 100), {
+    text: "No telemetry for 1.2 s",
+    tone: "bad",
+  });
+  assert.deepEqual(linkView({}, 0), { text: "Uno disconnected", tone: "bad" });
+});
+
+test("dcView: moving, arrived, not arrived in time, holding, stopped", () => {
+  const pos = { dcMode: 2, dcTarget: 90, dcDeg: 40, dcSettled: false };
+  assert.equal(dcView(pos, 1000, 900).tone, "neutral");
+  assert.match(dcView(pos, 1000, 900).text, /^moving to 90.0°/);
+  assert.equal(dcView(pos, 900 + DC_SETTLE_WARN_MS + 1, 900).tone, "warn");
+  assert.deepEqual(dcView({ ...pos, dcDeg: 91, dcSettled: true }, 2000, 900), {
+    text: "arrived ✓ at 91.0° (target 90.0°)",
+    tone: "good",
+  });
+  assert.equal(
+    dcView({ dcMode: 1, dcTarget: -45, dcRpm: -44.2 }, 0, undefined).text,
+    "holding -45.0 rpm (now -44.2)",
+  );
+  assert.equal(dcView({ dcMode: 0 }, 0, undefined).text, "stopped");
+  assert.equal(dcView({}, 0, undefined).text, "—");
+});
+
+test("status tones", () => {
+  assert.equal(statusTone("D,P,90.0: applied in 35 ms"), "good");
+  assert.equal(statusTone("P,90.0: ignored (SENSOR mode)"), "warn");
+  assert.equal(statusTone("S,120.0: no effect seen within 1 s"), "bad");
+});
+
+test("servo slider follows the live angle unless dragging", () => {
+  assert.equal(servoSliderValue({ dragging: false, dragValue: 10, live: 89.6 }), 90);
+  assert.equal(servoSliderValue({ dragging: true, dragValue: 10, live: 89.6 }), 10);
+  assert.equal(servoSliderValue({ dragging: false, dragValue: 10, live: undefined }), 10);
+});
+
+test("DC presets are valid commands", () => {
+  for (const deg of DC_MOVE_PRESETS) {
+    assert.equal(commands.dcMove(deg).message.data, deg);
+  }
+  for (const rpm of DC_RPM_PRESETS) {
+    assert.equal(commands.dcRpm(rpm).message.data, rpm);
+  }
 });

@@ -20,7 +20,7 @@ from typing import Dict
 
 # Field names after the leading "T", in the exact order the firmware sends them.
 # Changing this needs a PR that updates docs/protocol.md first.
-TELEMETRY_FIELDS = (
+TELEMETRY_FIELDS_BASE = (
     "ms", "mode",
     "flex_raw", "flex_deg", "flex_filt_deg",
     "tof_raw_mm", "tof_filt_mm",
@@ -30,8 +30,14 @@ TELEMETRY_FIELDS = (
     "step_deg", "step_target_deg",
     "interlock",
 )
+# Appended later (docs/protocol.md). Older firmware stops after "interlock", so a
+# line may carry the base fields only or the base fields plus all of these.
+TELEMETRY_FIELDS_EXTRA = ("dc_mode", "dc_target", "dc_arrived", "tof_fault")
+TELEMETRY_FIELDS = TELEMETRY_FIELDS_BASE + TELEMETRY_FIELDS_EXTRA
+ACCEPTED_LENGTHS = (len(TELEMETRY_FIELDS_BASE), len(TELEMETRY_FIELDS))
 TELEMETRY_PREFIX = "T"
-FLAG_FIELDS = ("mode", "interlock")       # must be exactly 0 or 1
+FLAG_FIELDS = ("mode", "interlock", "dc_arrived", "tof_fault")   # exactly 0 or 1 when present
+DC_MODES = (0.0, 1.0, 2.0)                                       # idle, velocity, position
 
 MODE_GUI, MODE_SENSOR = 0, 1
 
@@ -49,16 +55,18 @@ def is_telemetry(line: str) -> bool:
 def parse_telemetry(line: str) -> Telemetry:
     """Parse one telemetry line into {field: value}.
 
-    Accepts trailing whitespace / CRLF. Raises ParseError (never anything
-    else) for a wrong field count, a non-numeric or non-finite value, or a
-    mode/interlock flag that is not 0 or 1.
+    Accepts the base line (older firmware) or the base line plus the appended
+    fields; the result has only the fields that were sent. Accepts trailing
+    whitespace / CRLF. Raises ParseError (never anything else) for any other
+    field count, a non-numeric or non-finite value, a 0/1 flag that is neither,
+    or a dc_mode outside 0..2.
     """
     parts = line.strip().split(",")
     if parts[0] != TELEMETRY_PREFIX:
         raise ParseError(f"not a telemetry line: {line[:40]!r}")
     values = parts[1:]
-    if len(values) != len(TELEMETRY_FIELDS):
-        raise ParseError(f"expected {len(TELEMETRY_FIELDS)} fields, got {len(values)}")
+    if len(values) not in ACCEPTED_LENGTHS:
+        raise ParseError(f"expected {' or '.join(map(str, ACCEPTED_LENGTHS))} fields, got {len(values)}")
     out: Telemetry = {}
     for name, text in zip(TELEMETRY_FIELDS, values):
         try:
@@ -69,8 +77,10 @@ def parse_telemetry(line: str) -> Telemetry:
             raise ParseError(f"{name}: not finite: {text!r}")
         out[name] = value
     for name in FLAG_FIELDS:
-        if out[name] not in (0.0, 1.0):
+        if name in out and out[name] not in (0.0, 1.0):
             raise ParseError(f"{name}: expected 0 or 1, got {out[name]:g}")
+    if "dc_mode" in out and out["dc_mode"] not in DC_MODES:
+        raise ParseError(f"dc_mode: expected 0, 1 or 2, got {out['dc_mode']:g}")
     return out
 
 
