@@ -92,3 +92,10 @@ def test_panel_sensor_map_matches_config_h(key, define):
 def test_layout_includes_the_control_panel(layout):
     """Foxglove names extension panels "<extension name>.<panel name>!<id>"."""
     assert any(k.startswith("tsp05-control-panel.TSP05 Controls!") for k in layout["configById"])
+
+
+def test_every_plot_has_a_header_title(layout):
+    """Foxglove shows foxglovePanelTitle in the panel header; without it every plot reads "Plot"."""
+    for key, cfg in layout["configById"].items():
+        if key.startswith("Plot!"):
+            assert cfg.get("foxglovePanelTitle"), key
