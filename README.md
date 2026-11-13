@@ -163,7 +163,9 @@ revolution (within +-0.25 rpm, +-1 %), mean 26.28 rpm; 10 events for 10 revoluti
 After the stop it decays smoothly rather than holding the last value.
 
 ## Individual Contributions
-### <Name 1>
+### Andrew Haggstrom(Calibration for Thermister and Flex Sensor)
+- Calibrated all sensors
+- Wired These two sensors together
 ### Yashasvi Sorapalli (Track 2: Servo, Stepper, Button)
 - **Servo:** 0-180 deg mapped onto the measured 640-2351 us. The servo strains at 620 us and stalls at 2400 us.
 - **Stepper (EasyDriver):** 1600 steps/rev, verified. At most one step per `loop()` pass, so a move never blocks.
