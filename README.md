@@ -7,7 +7,7 @@
 
 | Sensor | Physical output | Controls |
 |---|---|---|
-| VL53L1X TOF | Distance (mm) | Servo angle |
+| VL53L1X TOF | Distance (mm), left/right swipe | Servo sweep direction |
 | Flex/bend sensor (Adafruit 182) | Bend angle (deg) | DC motor velocity |
 | Omron EE-SX1042 slot sensor | Event count, RPM | Stepper jog per event |
 | 10k thermistor | Temperature (degC) | DC motor thermal interlock |
@@ -163,7 +163,33 @@ revolution (within +-0.25 rpm, +-1 %), mean 26.28 rpm; 10 events for 10 revoluti
 After the stop it decays smoothly rather than holding the last value.
 
 ## Individual Contributions
-### <Name 1>
+### Deevi Nandu (Track 1: DC motor + encoder; TOF swipe gesture)
+- **DC motor module** (`firmware/tsp05/dc_control.*`, `dc_motor.*`): encoder ISR with 2x
+  decoding on INT0 (channel B read on D4), 10 ms control loop, filtered speed estimate.
+  Velocity mode is PI plus feedforward from a measured speed-vs-PWM map; position mode
+  is PD with the D term taken from filtered speed, stopping within +-2 deg (one encoder
+  count). Stiction is handled with separate breakaway (110 PWM, ramping up to 200 while
+  stuck) and running (60 PWM) deadbands. The control math has no Arduino calls, so it
+  is tested on the laptop.
+- **Measured on hardware** (`calibration/data/dc_*`): deadband (start 110-140, stop
+  56-59), 180 counts per output rev (2 deg per count), 140 rpm no load, steady speed
+  vs PWM in both directions, 13 step responses.
+- **Results**: position moves of 10/30/90 deg end within 2 deg in about 0.5 s; a
+  velocity step to 60 rpm holds 60.0 rpm and settles in 0.7 s.
+- **TOF swipe gesture** (`firmware/tsp05/tof_gesture.*`, PR #10): the VL53L1X is a
+  single-zone sensor, but alternating its view between two 8x10 zones (left and right
+  halves) gives two distances. A pass is a swipe when the zone that saw the hand first
+  also lost it first. In SENSOR mode a swipe sweeps the servo in that direction. 16 of
+  16 swipes detected in a replayed bench recording; every live swipe at 30-50 cm
+  detected.
+- **Tools and tests**: bring-up sketches (`firmware/bringup/dc_m0_openloop`,
+  `dc_m1_encoder`, `dc_pid`, `tof_swipe`), `tools/log_dc_step.py` and
+  `tools/log_dc_speed_map.py` (automated speed sweep), 34 host tests against a simulated
+  motor fitted to the hardware runs (about 1.2 deg RMS, under one count), 13 swipe tests.
+
+![DC velocity step](calibration/plots/dc_step_v60_compare.png)
+![DC position steps](calibration/plots/dc_position_steps_compare.png)
+
 ### Yashasvi Sorapalli (Track 2: Servo, Stepper, Button)
 - **Servo:** 0-180 deg mapped onto the measured 640-2351 us. The servo strains at 620 us and stalls at 2400 us.
 - **Stepper (EasyDriver):** 1600 steps/rev, verified. At most one step per `loop()` pass, so a move never blocks.
@@ -228,6 +254,36 @@ After the stop it decays smoothly rather than holding the last value.
 
 ## Challenges
 <!-- Per person: problem, analysis of cause, resolution -->
+### Deevi Nandu
+- **The motor didn't turn at all.** Commands reached the Uno and the encoder counted
+  by hand, but the motor stayed still. Measuring PWM, enable and output voltages on the
+  Solarbotics L298 board showed 0 V at the outputs with correct inputs: the board was
+  dead. Fix: switched to an L298N module (ENA jumper removed, D5 to ENA).
+- **Stiction.** The PWM needed to start the motor varied from 110 to 140 depending on
+  shaft angle, while a turning motor kept going down to 56-59. A single deadband either
+  stalled (too low) or hunted around the target (too high). Fix: separate breakaway and
+  running deadbands, with the breakaway value ramping up while the motor is stuck.
+- **Feedforward overshoot.** A straight-line PWM-vs-speed model predicted PWM 143 for
+  60 rpm; the motor needs about 93, so a 60 rpm step overshot by 54 %. Recording a speed
+  map in both directions (`tools/log_dc_speed_map.py`) and interpolating it cut the
+  overshoot to 25 %.
+- **D-term chatter.** With 2 deg encoder steps, differencing the position error flipped
+  the PWM sign every sample. I compared four versions on hardware (no D, raw D,
+  filtered D, filtered D at 0.1); D on filtered speed with Kd 0.1 gives at most one
+  brake and 4 deg overshoot.
+- **Counting turns by eye** gave 160-189 counts/rev. A closed-loop 10-turn move
+  confirmed 180.
+- **Simulator that didn't match.** The first simulated motor's coasting didn't match
+  the bench, so simulated step responses disagreed with the hardware ones. Fitting its
+  driven and coasting time constants (30 ms, 20 ms) to the recorded p90/p30/p10 steps
+  brought it to about 1.2 deg RMS, under one encoder count.
+- **Swipe zones that were secretly the same.** The SparkFun library's `setROI` silently
+  replaces the optical centre with the middle (199) when the zone is wider or taller
+  than 10, so the first 8x16 zones both saw the same centred view. 8x10 zones keep the
+  two centres. Entry order alone was also too weak (9 of 16 swipes led by a single 40 ms
+  sample, which a straight push can also produce), so the detector also requires the
+  exit order to agree.
+
 ### Yashasvi Sorapalli
 - **The stepper vibrated but didn't turn.** At first the motor only rocked back and
   forth about its shaft. Cause: the motor wires were connected to the EasyDriver
